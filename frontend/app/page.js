@@ -23,9 +23,12 @@ export default function Home() {
               resume optimization, job search, career guidance, and interactive learning tools—all in one place.
             </p>
             <div className="flex gap-4">
-              <button className="bg-gradient-to-r from-purple-600 to-blue-500 text-white px-8 py-3 rounded-full hover:shadow-lg transition-all">
-                Sign Up
-              </button>
+            <a
+  href="/register"
+  className="bg-gradient-to-r from-purple-600 to-blue-500 text-white px-8 py-3 rounded-full hover:shadow-lg transition-all"
+>
+  Sign Up
+</a>
               <button className="border border-purple-600 text-purple-600 px-8 py-3 rounded-full hover:bg-purple-50 transition-all">
                 Learn More
               </button>
