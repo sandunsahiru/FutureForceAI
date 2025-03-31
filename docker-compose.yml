@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  # 1) Next.js container
+  nextjs:
+    build: 
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: nextjs
+    # If you need environment variables, you can set them here or load from a .env
+    # environment:
+    #   NEXT_PUBLIC_API_URL: "http://localhost" 
+    #   ...
+    # We'll let Nginx handle the port exposure
+    expose:
+      - "3000"
+
+  # 2) FastAPI container
+  fastapi:
+    build:
+      context: ./ai-backend
+      dockerfile: Dockerfile
+    container_name: fastapi
+    expose:
+      - "8000"
+
+  # 3) Nginx reverse proxy
+  nginx:
+    image: nginx:latest
+    container_name: proxy
+    # Map local port 80 to container's port 80
+    ports:
+      - "80:80"
+    depends_on:
+      - nextjs
+      - fastapi
+    volumes:
+      # Mount our custom config into Nginx
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro

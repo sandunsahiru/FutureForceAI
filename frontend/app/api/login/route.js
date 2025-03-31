@@ -1,38 +1,45 @@
-// app/api/login/route.js
-import { NextResponse } from 'next/server';
-import connectToDatabase from '@/lib/db';
-import User from '@/models/User';
-import bcrypt from 'bcryptjs';
+import { NextResponse } from "next/server";
+import connectToDatabase from "@/lib/db";
+import User from "@/models/User";
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
 
 export async function POST(request) {
   try {
-    const body = await request.json();
-    const { email, password } = body;
+    const { email, password } = await request.json();
 
-    // Basic validation
     if (!email || !password) {
-      return NextResponse.json({ error: 'Missing email or password' }, { status: 400 });
+      return NextResponse.json({ error: "Missing email or password" }, { status: 400 });
     }
 
-    // Connect to MongoDB
     await connectToDatabase();
-
-    // Find user by email
     const user = await User.findOne({ email });
     if (!user) {
-      return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 });
+      return NextResponse.json({ error: "Invalid credentials" }, { status: 401 });
     }
 
-    // Compare password with stored hash
     const isMatch = await bcrypt.compare(password, user.passwordHash);
     if (!isMatch) {
-      return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 });
+      return NextResponse.json({ error: "Invalid credentials" }, { status: 401 });
     }
 
-    // If everything is correct, return success
-    return NextResponse.json({ message: 'Login successful' }, { status: 200 });
+    // Create JWT
+    const token = jwt.sign({ userId: user._id.toString() }, process.env.JWT_SECRET, {
+      expiresIn: "1h",
+    });
+
+    const response = NextResponse.json({ message: "Login successful" });
+    response.cookies.set("token", token, {
+      httpOnly: true,
+      sameSite: "lax", // Use "lax" for local development
+      maxAge: 60 * 60, // 1 hour
+      path: "/",
+      secure: false, // For local development, secure must be false
+    });
+
+    return response;
   } catch (error) {
-    console.error('Login error:', error);
-    return NextResponse.json({ error: 'Server error' }, { status: 500 });
+    console.error("Login error:", error);
+    return NextResponse.json({ error: "Server error" }, { status: 500 });
   }
 }

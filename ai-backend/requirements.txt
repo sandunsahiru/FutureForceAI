@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+motor
+google-cloud-vision
+openai
+python-dotenv
+PyJWT
+python-multipart

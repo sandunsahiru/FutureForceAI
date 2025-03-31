@@ -1,14 +1,10 @@
-// app/login/page.js
 "use client";
 import { useState } from "react";
 import Header from "../Header";
 import Footer from "../Footer";
 
 export default function LoginPage() {
-  const [credentials, setCredentials] = useState({
-    email: "",
-    password: "",
-  });
+  const [credentials, setCredentials] = useState({ email: "", password: "" });
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -18,25 +14,24 @@ export default function LoginPage() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
-      // Call our /api/login route
       const res = await fetch("/api/login", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
+        // body is the JSON with email/password
         body: JSON.stringify(credentials),
       });
 
       const data = await res.json();
-
       if (!res.ok) {
         console.error("Login error:", data.error);
-        // Show an error message or handle it as needed
         return;
       }
 
       console.log("Login successful:", data.message);
-      // Redirect to dashboard or wherever you want after successful login
+      // Optionally check or store user info from data
+      // The cookie is automatically set by Next.js
       window.location.href = "/dashboard";
     } catch (error) {
       console.error("Error logging in:", error);

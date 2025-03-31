@@ -25,29 +25,27 @@ export default function InterviewPrep() {
     try {
       setLoading(true);
 
-      // Prepare form data for file upload + job role
+      // Prepare form data with file and job role
       const formData = new FormData();
-      // You can replace "12345" with the actual user_id from your auth system
-      formData.append("user_id", "12345");
       formData.append("cv_file", cvFile);
       formData.append("job_role", jobRole);
 
-      // Call the FastAPI backend
-      const response = await fetch("http://localhost:8000/api/interview/start", {
+      // Call the FastAPI backend (the token cookie is sent automatically)
+      const response = await fetch("/api/interview/start", {
         method: "POST",
         body: formData,
+        credentials: "include", // if you need cookies
       });
 
       const data = await response.json();
 
       if (!response.ok) {
-        // If the server returned an error, display it
         alert(`Error: ${data.detail || "Unable to start interview"}`);
         setLoading(false);
         return;
       }
 
-      // Store session ID and the first AI message
+      // Store session_id and the first AI message
       setSessionId(data.session_id);
       setChatMessages([
         {
@@ -55,7 +53,6 @@ export default function InterviewPrep() {
           text: data.first_ai_message.text,
         },
       ]);
-
       setChatStarted(true);
     } catch (err) {
       console.error("Error starting interview:", err);
@@ -69,17 +66,17 @@ export default function InterviewPrep() {
   const handleSendMessage = async () => {
     if (!currentInput.trim()) return;
 
-    // First, append the user's message to the chat
+    // Append the user's message locally
     const userMessage = { sender: "user", text: currentInput };
     setChatMessages((prev) => [...prev, userMessage]);
 
     try {
       setLoading(true);
 
-      // Call the chat endpoint with session_id and user's message
       const response = await fetch("http://localhost:8000/api/interview/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include", // ensure token cookie is sent
         body: JSON.stringify({
           session_id: sessionId,
           user_message: currentInput,
@@ -87,14 +84,13 @@ export default function InterviewPrep() {
       });
 
       const data = await response.json();
-
       if (!response.ok) {
         alert(`Error: ${data.detail || "Unable to continue interview"}`);
         setLoading(false);
         return;
       }
 
-      // data.messages is the entire updated conversation
+      // Update the entire conversation with the new messages from the backend
       setChatMessages(data.messages);
       setCurrentInput("");
     } catch (err) {
@@ -111,7 +107,7 @@ export default function InterviewPrep() {
         Interview Prep Bot
       </h2>
 
-      {/* If the interview hasn't started yet, show file/jobRole inputs */}
+      {/* Show inputs if the interview hasn't started */}
       {!chatStarted ? (
         <div className="space-y-4">
           <div>
@@ -123,9 +119,10 @@ export default function InterviewPrep() {
               className="mt-1 block w-full"
             />
           </div>
-
           <div>
-            <label className="block text-gray-700">Job Role for Interview:</label>
+            <label className="block text-gray-700">
+              Job Role for Interview:
+            </label>
             <input
               type="text"
               value={jobRole}
@@ -134,7 +131,6 @@ export default function InterviewPrep() {
               placeholder="e.g., Software Engineer"
             />
           </div>
-
           <button
             onClick={handleStartChat}
             className="bg-purple-700 text-white px-4 py-2 rounded-md hover:bg-purple-800 transition"
@@ -159,7 +155,6 @@ export default function InterviewPrep() {
               </div>
             ))}
           </div>
-
           <div className="mt-4 flex">
             <input
               type="text"
