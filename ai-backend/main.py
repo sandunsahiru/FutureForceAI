@@ -1,10 +1,45 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+import os
+import logging
+
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger("futureforceai")
 
 # Import our APIRouter from interviewprep
-from routers.interviewprep import router as interviewprep_router
+try:
+    from routers.interviewprep import router as interviewprep_router
+    logger.info("Successfully imported interviewprep router")
+except ImportError as e:
+    logger.error(f"Failed to import interviewprep router: {e}")
+    # List the contents of the routers directory to debug
+    try:
+        routers_dir = os.path.join(os.path.dirname(__file__), "routers")
+        if os.path.exists(routers_dir):
+            logger.info(f"Contents of routers directory: {os.listdir(routers_dir)}")
+        else:
+            logger.error(f"Routers directory not found at {routers_dir}")
+    except Exception as list_err:
+        logger.error(f"Error listing routers directory: {list_err}")
+    raise
 
 app = FastAPI()
+
+# Add debugging middleware to log all requests
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    logger.info(f"Incoming request: {request.method} {request.url.path}")
+    try:
+        response = await call_next(request)
+        logger.info(f"Response status code: {response.status_code}")
+        return response
+    except Exception as e:
+        logger.error(f"Request error: {e}")
+        raise
 
 # CORS for your Next.js front end
 app.add_middleware(
@@ -15,10 +50,57 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include the interviewprep router under the prefix "/api/interview"
+# Create __init__.py if it doesn't exist
+def initialize():
+    """
+    Initialize the application:
+    1. Create __init__.py in the routers directory if it doesn't exist
+    2. Check if all required routes are properly registered
+    """
+    try:
+        # Create __init__.py in routers directory if it doesn't exist
+        routers_dir = os.path.join(os.path.dirname(__file__), "routers")
+        
+        if not os.path.exists(routers_dir):
+            logger.warning(f"Creating routers directory: {routers_dir}")
+            os.makedirs(routers_dir, exist_ok=True)
+        
+        init_file = os.path.join(routers_dir, "__init__.py")
+        if not os.path.exists(init_file):
+            logger.info(f"Creating __init__.py in routers directory: {init_file}")
+            with open(init_file, "w") as f:
+                f.write("# This file makes the routers directory a Python package\n")
+    except Exception as e:
+        logger.error(f"Error during initialization: {e}")
+
+# Call initialize function
+initialize()
+
+# Add the router with the API path prefix
+# Important: Dont double-prefix - the router in interviewprep.py should have no prefix
+logger.info("Registering interviewprep router with prefix: /api/interview")
 app.include_router(interviewprep_router, prefix="/api/interview", tags=["InterviewPrep"])
+
+# Log all registered routes for debugging
+for route in app.routes:
+    logger.info(f"Registered route: {route.path} [{', '.join(route.methods)}]")
+
+# Add a health check endpoint
+@app.get("/")
+async def root():
+    logger.info("Health check endpoint called")
+    return {
+        "status": "healthy", 
+        "message": "FutureForceAI API is running",
+        "routes": [
+            {"path": route.path, "methods": list(route.methods)}
+            for route in app.routes
+            if hasattr(route, "methods")
+        ]
+    }
 
 # If you want to run directly with: python main.py
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    logger.info("Starting FastAPI server")
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="debug")
