@@ -10,12 +10,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger("futureforceai")
 
-# Import our APIRouter from interviewprep
+# Import our APIRouters
 try:
+    # Import interview prep router
     from routers.interviewprep import router as interviewprep_router
     logger.info("Successfully imported interviewprep router")
+    
+    # Import the new CV router
+    from routers.cv_model import router as cv_router
+    logger.info("Successfully imported CV router")
+    
+    # Import the new saved CV router
+    from routers.saved_cv_route import router as saved_cv_router
+    logger.info("Successfully imported saved CV router")
 except ImportError as e:
-    logger.error(f"Failed to import interviewprep router: {e}")
+    logger.error(f"Failed to import routers: {e}")
     # List the contents of the routers directory to debug
     try:
         routers_dir = os.path.join(os.path.dirname(__file__), "routers")
@@ -76,10 +85,17 @@ def initialize():
 # Call initialize function
 initialize()
 
-# Add the router with the API path prefix
-# Important: Dont double-prefix - the router in interviewprep.py should have no prefix
+# Register routers with their API path prefixes
 logger.info("Registering interviewprep router with prefix: /api/interview")
 app.include_router(interviewprep_router, prefix="/api/interview", tags=["InterviewPrep"])
+
+logger.info("Registering CV router with prefix: /api/cv")
+app.include_router(cv_router, prefix="/api/cv", tags=["CV"])
+
+# Register the saved CV router
+# Note: We don't add a prefix here since the saved_cv_router already includes the full path
+logger.info("Registering saved CV router")
+app.include_router(saved_cv_router, tags=["SavedCV"])
 
 # Log all registered routes for debugging
 for route in app.routes:

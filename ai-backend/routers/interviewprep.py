@@ -8,6 +8,11 @@ from fastapi import APIRouter, File, UploadFile, Form, HTTPException, status, Re
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 import jwt
+import base64
+
+# Import our improved PDF extraction module
+# Save the module as pdf_extraction.py in the same directory
+from .pdf_extraction import extract_text_from_document
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -51,6 +56,10 @@ logger.info(f"Using MongoDB URI: {MONGODB_URI}")
 # Define the OpenAI model to use
 OPENAI_MODEL = "gpt-4.1-mini-2025-04-14"
 logger.info(f"Using OpenAI model: {OPENAI_MODEL}")
+
+# Configure the number of interview questions to ask before providing final feedback
+MAX_INTERVIEW_QUESTIONS = int(os.getenv("MAX_INTERVIEW_QUESTIONS", "5"))
+logger.info(f"Maximum interview questions set to: {MAX_INTERVIEW_QUESTIONS}")
 
 # Initialize OpenAI client (for v1.x)
 openai_client = None
@@ -130,6 +139,7 @@ class ConversationModel(BaseModel):
     messages: List[ChatMessage]
     created_at: datetime = Field(default_factory=datetime.utcnow)
     finished: bool = False
+    max_questions: int = Field(default=MAX_INTERVIEW_QUESTIONS)
 
 # ------------------------------------------------------------------
 # Helper Functions
@@ -157,33 +167,137 @@ async def save_cv_to_disk(cv_file: UploadFile) -> str:
             detail=f"Error saving CV file: {str(e)}"
         )
 
-def extract_text_with_vision(file_path: str) -> str:
+def extract_text_from_cv(file_path: str) -> str:
     """
-    Extract text from CV using Google Vision or fallback to placeholder.
+    Extract text from CV using our improved document extraction module.
+    Now includes OpenAI Vision API as a fallback for image-based PDFs.
     """
     logger.info(f"Extracting text from CV: {file_path}")
     
-    # Use placeholder text if Vision client is not available
-    if vision_client is None:
-        logger.warning("Vision client not available, using placeholder text")
-        return f"Sample CV content for testing. File: {os.path.basename(file_path)}"
-        
     try:
-        with open(file_path, "rb") as f:
-            content = f.read()
-        image = vision.Image(content=content)
-        response = vision_client.document_text_detection(image=image)
+        # Use our improved extraction function that handles various file types
+        # Pass both vision_client and openai_client to enable all extraction methods
+        extracted_text = extract_text_from_document(file_path, vision_client, openai_client)
         
-        if response.error.message:
-            logger.error(f"Vision API error: {response.error.message}")
-            return f"Error extracting text: {response.error.message}"
-            
-        extracted_text = response.full_text_annotation.text
-        logger.info(f"Extracted {len(extracted_text)} characters")
+        # Log the extraction result
+        if extracted_text:
+            logger.info(f"Successfully extracted {len(extracted_text)} characters from CV")
+        else:
+            logger.warning("No text extracted from CV")
+            extracted_text = f"Failed to extract text from CV file: {os.path.basename(file_path)}"
+        
+        # If extraction returned very little text, try the pure OpenAI method as a last resort
+        if len(extracted_text.strip()) < 100 and openai_client is not None:
+            logger.warning(f"Extraction produced limited text ({len(extracted_text.strip())} characters), trying direct OpenAI Vision method")
+            try:
+                # Get file extension and determine content type
+                file_ext = os.path.splitext(file_path)[1].lower()
+                content_type = "application/pdf" if file_ext == '.pdf' else "image/jpeg" if file_ext in ['.jpg', '.jpeg'] else "image/png"
+                
+                # Read file and encode to base64
+                with open(file_path, "rb") as f:
+                    file_content = f.read()
+                file_b64 = base64.b64encode(file_content).decode('utf-8')
+                
+                # Call OpenAI Vision API
+                response = openai_client.chat.completions.create(
+                    model="gpt-4.1-mini",
+                    messages=[
+                        {"role": "system", "content": "You are a helpful assistant that extracts text from CV/resume documents."},
+                        {"role": "user", "content": [
+                            {"type": "text", "text": "Extract all the text content from this CV/resume document. Include all sections like personal info, education, experience, skills, etc. Format it clearly and preserve the structure."},
+                            {"type": "image_url", "image_url": {"url": f"data:{content_type};base64,{file_b64}"}}
+                        ]}
+                    ],
+                    max_tokens=4000
+                )
+                
+                openai_text = response.choices[0].message.content
+                if openai_text and len(openai_text.strip()) > len(extracted_text.strip()):
+                    logger.info(f"OpenAI Vision extracted {len(openai_text)} characters - using this instead")
+                    return openai_text
+            except Exception as e:
+                logger.error(f"OpenAI Vision direct extraction failed: {e}")
+        
         return extracted_text
     except Exception as e:
         logger.error(f"Error extracting text: {e}")
         return f"Error extracting text: {str(e)}"
+        
+def extract_text_with_openai(file_path: str, openai_client=None) -> str:
+    """Extract text from document using OpenAI's Vision API."""
+    if not openai_client:
+        logger.warning("OpenAI client not provided, can't use OpenAI Vision API")
+        return ""
+    
+    try:
+        logger.info(f"Extracting text with OpenAI Vision API: {file_path}")
+        
+        # Determine file type
+        file_ext = os.path.splitext(file_path)[1].lower()
+        
+        # For PDFs, we need to convert them to images first
+        if file_ext == '.pdf':
+            logger.info("Converting PDF to image for OpenAI Vision processing")
+            
+            # Try using pdf2image if available
+            if PDF2IMAGE_AVAILABLE:
+                try:
+                    # Convert only the first page for initial extraction
+                    with tempfile.TemporaryDirectory() as temp_dir:
+                        images = convert_from_path(file_path, dpi=300, first_page=1, last_page=1, output_folder=temp_dir)
+                        if images:
+                            temp_img_path = os.path.join(temp_dir, "page_1.png")
+                            images[0].save(temp_img_path, "PNG")
+                            
+                            # Process the first page image
+                            with open(temp_img_path, "rb") as f:
+                                file_content = f.read()
+                            file_b64 = base64.b64encode(file_content).decode('utf-8')
+                            content_type = "image/png"
+                        else:
+                            logger.error("Failed to convert PDF to image")
+                            return ""
+                except Exception as e:
+                    logger.error(f"Error converting PDF to image: {e}")
+                    return f"Error converting PDF: {str(e)}"
+            else:
+                logger.error("pdf2image not available, cannot convert PDF for OpenAI Vision")
+                return "Cannot process PDF without pdf2image library"
+        else:
+            # For image files, process directly
+            with open(file_path, "rb") as f:
+                file_content = f.read()
+            file_b64 = base64.b64encode(file_content).decode('utf-8')
+            
+            # Set content type based on file extension
+            if file_ext in ['.jpg', '.jpeg']:
+                content_type = "image/jpeg"
+            elif file_ext in ['.png']:
+                content_type = "image/png"
+            else:
+                content_type = "image/jpeg"  # Default to jpeg
+        
+        # Call OpenAI vision model
+        response = openai_client.chat.completions.create(
+            model="gpt-4.1-vision-preview",  # Use vision-capable model
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant that extracts text content from resume/CV documents."},
+                {"role": "user", "content": [
+                    {"type": "text", "text": "Extract and organize all text content from this CV/resume document. Include all sections like personal info, education, experience, skills, etc. in a clean, structured format."},
+                    {"type": "image_url", "image_url": {"url": f"data:{content_type};base64,{file_b64}"}}
+                ]}
+            ],
+            max_tokens=4000
+        )
+        
+        extracted_text = response.choices[0].message.content
+        logger.info(f"Successfully extracted {len(extracted_text)} characters with OpenAI Vision API")
+        return extracted_text
+        
+    except Exception as e:
+        logger.error(f"Error extracting text with OpenAI Vision API: {e}")
+        return f"Error extracting text with OpenAI: {str(e)}"
 
 def call_openai(prompt: str) -> str:
     """
@@ -241,7 +355,8 @@ def call_openai(prompt: str) -> str:
 async def build_openai_prompt(
     cv_text: str,
     job_role: str,
-    messages: List[Dict[str, str]]
+    messages: List[Dict[str, str]],
+    max_questions: int = MAX_INTERVIEW_QUESTIONS
 ) -> str:
     """
     Build a prompt for the AI model.
@@ -250,10 +365,10 @@ async def build_openai_prompt(
     system_instructions = (
         f"You are a highly knowledgeable AI interviewer, specializing in {job_role} interviews.\n"
         f"You have the candidate's CV:\n\n{cv_text}\n\n"
-        "Your goal is to ask questions one by one, evaluate correctness, and give professional yet friendly feedback. "
-        "If the candidate's answer is unclear or incomplete, politely ask for more details. "
-        "Continue until you've asked 10 questions total or the candidate is done.\n\n"
-        "Please keep responses focused, realistic, and supportive."
+        f"Your goal is to ask questions one by one, evaluate correctness, and give professional yet friendly feedback. "
+        f"If the candidate's answer is unclear or incomplete, politely ask for more details. "
+        f"Continue until you've asked {max_questions} questions total or the candidate is done.\n\n"
+        f"Please keep responses focused, realistic, and supportive. Ask questions that are personalized to the candidate's CV."
     )
     conversation_text = ""
     for msg in messages:
@@ -288,16 +403,22 @@ def format_conversation(messages: List[Dict[str, str]]) -> str:
 @router.post("/start")
 async def start_interview(
     request: Request,
-    cv_file: UploadFile = File(...),
-    job_role: str = Form(...),
-    auth_token: str = Form(None),  # Add this parameter to receive token from form data
+    cv_file: Optional[UploadFile] = None,
+    job_role: Optional[str] = Form(None),
+    cv_id: Optional[str] = Form(None),
+    auth_token: Optional[str] = Form(None),
+    max_questions: Optional[int] = Form(MAX_INTERVIEW_QUESTIONS),
 ):
     """
-    Start a new interview session.
+    Start a new interview session with either a CV file upload or CV ID reference.
     """
-    logger.info(f"Starting interview for job role: {job_role}")
+    logger.info(f"Starting interview with job_role: {job_role}, cv_id: {cv_id}")
+    logger.info(f"Headers: {dict(request.headers)}")
+    
     try:
         # 1) Check for auth token in multiple places
+        token = None
+        
         # First try cookies
         token = request.cookies.get("token")
         logger.info(f"Token from cookies: {token is not None}")
@@ -314,8 +435,9 @@ async def start_interview(
                 token = auth_header[7:]  # Remove 'Bearer ' prefix
                 logger.info(f"Token from Authorization header: {token is not None}")
         
+        # No token found in any source
         if not token:
-            logger.warning("No authentication token found")
+            logger.warning("No authentication token found in any source")
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Authentication required"}
@@ -323,7 +445,7 @@ async def start_interview(
             
         # 2) Verify token
         try:
-            logger.info(f"Verifying token: {token[:10]}...")
+            logger.info(f"Verifying token")
             payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
             user_id = payload.get("userId")
             if not user_id:
@@ -340,19 +462,89 @@ async def start_interview(
                 content={"detail": f"Invalid token: {str(e)}"}
             )
 
-        # 3) Save CV file
-        try:
-            file_path = await save_cv_to_disk(cv_file)
-            logger.info(f"CV file saved: {file_path}")
-        except Exception as e:
-            logger.error(f"Error saving CV: {e}")
+        # 3) Validate required parameters
+        if not job_role:
+            logger.error("Missing job_role parameter")
             return JSONResponse(
-                status_code=500,
-                content={"detail": f"Error saving CV: {str(e)}"}
+                status_code=400,
+                content={"detail": "Job role is required"}
+            )
+            
+        if not cv_file and not cv_id:
+            logger.error("Neither cv_file nor cv_id provided")
+            return JSONResponse(
+                status_code=400, 
+                content={"detail": "Either CV file or CV ID must be provided"}
             )
 
-        # 4) Extract text (or use fallback)
-        cv_text = extract_text_with_vision(file_path)
+        # 4) Handle CV content
+        cv_text = None
+        
+        # Process CV based on whether we have a file or ID
+        if cv_file:
+            logger.info(f"Processing uploaded CV file: {cv_file.filename}")
+            try:
+                file_path = await save_cv_to_disk(cv_file)
+                logger.info(f"CV file saved: {file_path}")
+                cv_text = extract_text_from_cv(file_path)
+            except Exception as e:
+                logger.error(f"Error processing CV file: {e}")
+                return JSONResponse(
+                    status_code=500,
+                    content={"detail": f"Error processing CV file: {str(e)}"}
+                )
+        elif cv_id:
+            logger.info(f"Looking up CV by ID: {cv_id}")
+            # Get CV collection
+            db = conversations_col.database
+            cv_collection = db.get_collection("cvs")
+            
+            if not cv_collection:
+                logger.error("CV collection not found in database")
+                return JSONResponse(
+                    status_code=500,
+                    content={"detail": "CV storage not available"}
+                )
+                
+            # Find CV document
+            try:
+                cv_query = {"$or": [
+                    {"_id": cv_id},
+                    {"_id": ObjectId(cv_id) if len(cv_id) == 24 else cv_id}
+                ]}
+                cv_query["userId"] = user_id
+                
+                cv_document = await cv_collection.find_one(cv_query)
+                
+                if not cv_document:
+                    logger.warning(f"CV not found for ID: {cv_id}")
+                    return JSONResponse(
+                        status_code=404,
+                        content={"detail": f"CV not found: {cv_id}"}
+                    )
+                    
+                # Get CV content
+                cv_text = cv_document.get("content")
+                cv_file_path = cv_document.get("filePath")
+                
+                # Extract text from file if needed
+                if not cv_text and cv_file_path and os.path.exists(cv_file_path):
+                    logger.info(f"Extracting text from file: {cv_file_path}")
+                    cv_text = extract_text_from_document(cv_file_path, vision_client, openai_client)
+            except Exception as e:
+                logger.error(f"Error retrieving CV: {e}")
+                return JSONResponse(
+                    status_code=500,
+                    content={"detail": f"Error retrieving CV: {str(e)}"}
+                )
+        
+        # Validate CV text
+        if not cv_text or len(cv_text.strip()) < 100:
+            logger.warning(f"Insufficient CV text: {len(cv_text) if cv_text else 0} chars")
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "Could not extract sufficient content from CV"}
+            )
 
         # 5) Generate session ID
         session_id = str(uuid.uuid4())
@@ -360,7 +552,7 @@ async def start_interview(
 
         # 6) Create initial AI message
         initial_ai_text = (
-            f"Thank you for uploading your CV for the {job_role} position. "
+            f"Thank you for your CV for the {job_role} position. "
             "Let's begin the interview. Can you tell me about yourself?"
         )
 
@@ -372,10 +564,12 @@ async def start_interview(
             "cv_text": cv_text,
             "messages": [{"sender": "ai", "text": initial_ai_text}],
             "created_at": datetime.utcnow(),
-            "finished": False
+            "finished": False,
+            "max_questions": max_questions,
+            "cv_id": cv_id  # Include if provided
         }
 
-        # 8) Save to MongoDB (if available)
+        # 8) Save to MongoDB
         if conversations_col is not None:
             try:
                 await conversations_col.insert_one(conversation_doc)
@@ -391,6 +585,10 @@ async def start_interview(
             "session_id": session_id,
             "first_ai_message": {"sender": "ai", "text": initial_ai_text}
         }
+        
+        # Include CV ID in response if provided
+        if cv_id:
+            response_data["cv_id"] = cv_id
         
         logger.info(f"Returning response: {response_data}")
         return JSONResponse(content=response_data)
@@ -449,10 +647,14 @@ async def interview_chat(request: ChatRequest):
         messages.append({"sender": "user", "text": request.user_message})
         logger.info(f"Added user message to session {request.session_id}")
 
+        # Get the max questions value for this conversation (with fallback to default)
+        max_questions = convo.get("max_questions", MAX_INTERVIEW_QUESTIONS)
+        logger.info(f"Using max_questions={max_questions} for this session")
+
         # 5) Check if we should provide final feedback
         ai_message_count = sum(1 for m in messages if m["sender"] == "ai")
-        if ai_message_count >= 10:
-            logger.info(f"Session {request.session_id} reached max questions, generating final feedback")
+        if ai_message_count >= max_questions:
+            logger.info(f"Session {request.session_id} reached max questions ({max_questions}), generating final feedback")
             
             # Generate final feedback
             conversation_text = format_conversation(messages)
@@ -483,7 +685,8 @@ async def interview_chat(request: ChatRequest):
         prompt = await build_openai_prompt(
             cv_text=convo["cv_text"],
             job_role=convo["job_role"],
-            messages=messages
+            messages=messages,
+            max_questions=max_questions
         )
         ai_reply = call_openai(prompt)
         messages.append({"sender": "ai", "text": ai_reply})
@@ -498,7 +701,6 @@ async def interview_chat(request: ChatRequest):
         except Exception as db_err:
             logger.error(f"Error updating MongoDB: {db_err}")
             # Continue anyway - we'll return the messages even if DB update fails
-        
         # 8) Return the response
         return ChatResponse(
             messages=[ChatMessage(sender=m["sender"], text=m["text"]) for m in messages]
@@ -509,6 +711,171 @@ async def interview_chat(request: ChatRequest):
         return JSONResponse(
             status_code=500,
             content={"detail": f"An error occurred: {str(e)}"}
+        )
+# Add this route to your interviewprep.py file
+
+@router.get("/sessions")
+async def get_sessions(request: Request):
+    """
+    Get all interview sessions for the authenticated user.
+    """
+    logger.info("GET /sessions endpoint called")
+    
+    # 1) Verify authentication
+    token = request.cookies.get("token")
+    if not token:
+        logger.warning("No authentication token found")
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Authentication required"}
+        )
+        
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        user_id = payload.get("userId")
+        if not user_id:
+            logger.warning("Invalid token: missing userId")
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Invalid authentication token"}
+            )
+        logger.info(f"Token verified for user: {user_id}")
+    except jwt.PyJWTError as e:
+        logger.error(f"JWT decode error: {e}")
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Invalid token"}
+        )
+    
+    # 2) Check if MongoDB is available
+    if conversations_col is None:
+        logger.error("MongoDB not connected")
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Database unavailable"}
+        )
+        
+    # 3) Retrieve sessions
+    try:
+        cursor = conversations_col.find(
+            {"user_id": user_id},
+            {
+                "session_id": 1,
+                "job_role": 1,
+                "created_at": 1,
+                "finished": 1,
+                "messages": 1,  # We need this to count messages
+                # Exclude large fields like cv_text
+            }
+        ).sort("created_at", -1)  # Newest first
+        
+        sessions = await cursor.to_list(length=100)  # Limit to 100 sessions
+        
+        # Format the response
+        formatted_sessions = []
+        for session in sessions:
+            # Convert ObjectId to string and format dates
+            session_id = session.get("session_id", "")
+            created_at = session.get("created_at", datetime.utcnow())
+            
+            # Format the session data
+            formatted_session = {
+                "id": session_id,
+                "job_role": session.get("job_role", "Unknown"),
+                "created_at": created_at.isoformat() if isinstance(created_at, datetime) else created_at,
+                "finished": session.get("finished", False),
+                "message_count": len(session.get("messages", []))
+            }
+            formatted_sessions.append(formatted_session)
+            
+        logger.info(f"Retrieved {len(formatted_sessions)} sessions for user {user_id}")
+        return JSONResponse(content={"sessions": formatted_sessions})
+        
+    except Exception as e:
+        logger.error(f"Error retrieving sessions: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Error retrieving sessions: {str(e)}"}
+        )
+
+@router.get("/session/{session_id}")
+async def get_session(session_id: str, request: Request):
+    """
+    Get a specific interview session by ID.
+    """
+    logger.info(f"GET /session/{session_id} endpoint called")
+    
+    # 1) Verify authentication
+    token = request.cookies.get("token")
+    if not token:
+        logger.warning("No authentication token found")
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Authentication required"}
+        )
+        
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        user_id = payload.get("userId")
+        if not user_id:
+            logger.warning("Invalid token: missing userId")
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Invalid authentication token"}
+            )
+        logger.info(f"Token verified for user: {user_id}")
+    except jwt.PyJWTError as e:
+        logger.error(f"JWT decode error: {e}")
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Invalid token"}
+        )
+    
+    # 2) Check if MongoDB is available
+    if conversations_col is None:
+        logger.error("MongoDB not connected")
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Database unavailable"}
+        )
+        
+    # 3) Retrieve the specific session
+    try:
+        session = await conversations_col.find_one({"session_id": session_id})
+        
+        if not session:
+            logger.warning(f"Session not found: {session_id}")
+            return JSONResponse(
+                status_code=404,
+                content={"detail": "Session not found"}
+            )
+            
+        # Check if user has permission to access this session
+        if session.get("user_id") != user_id:
+            logger.warning(f"Unauthorized access attempt: user {user_id} trying to access session {session_id}")
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Unauthorized"}
+            )
+            
+        # Format the response
+        response_data = {
+            "session_id": session.get("session_id"),
+            "job_role": session.get("job_role"),
+            "created_at": session.get("created_at").isoformat() if isinstance(session.get("created_at"), datetime) else session.get("created_at"),
+            "finished": session.get("finished", False),
+            "messages": session.get("messages", []),
+            "max_questions": session.get("max_questions", MAX_INTERVIEW_QUESTIONS)
+        }
+        
+        logger.info(f"Retrieved session {session_id} for user {user_id}")
+        return JSONResponse(content=response_data)
+        
+    except Exception as e:
+        logger.error(f"Error retrieving session: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Error retrieving session: {str(e)}"}
         )
 
 # ------------------------------------------------------------------
@@ -528,6 +895,9 @@ async def health_check():
             "vision_api": "available" if vision_client is not None else "unavailable",
             "openai_api": "configured" if (openai_client is not None) or (openai is not None and openai_api_key) else "not_configured",
             "openai_model": OPENAI_MODEL
+        },
+        "config": {
+            "max_interview_questions": MAX_INTERVIEW_QUESTIONS
         }
     }
     
@@ -593,6 +963,7 @@ async def get_user_sessions(user_id: str, request: Request):
                 "job_role": 1,
                 "created_at": 1,
                 "finished": 1,
+                "max_questions": 1,
                 # Exclude large fields like cv_text and full messages
             }
         ).sort("created_at", -1)  # Newest first
@@ -734,7 +1105,7 @@ async def process_cv(cv_file: UploadFile = File(...)):
         file_path = await save_cv_to_disk(cv_file)
         
         # Extract text
-        cv_text = extract_text_with_vision(file_path)
+        cv_text = extract_text_from_cv(file_path)
         
         # Return results
         return {
@@ -777,6 +1148,9 @@ async def api_status():
             "installed": vision is not None,
             "client_available": vision_client is not None,
             "credentials_path": gcp_credentials_path
+        },
+        "config": {
+            "max_interview_questions": MAX_INTERVIEW_QUESTIONS
         }
     }
     
@@ -802,3 +1176,356 @@ async def api_status():
             status["openai"]["error"] = str(e)
     
     return status
+
+# ------------------------------------------------------------------
+# Config Update Endpoint
+# ------------------------------------------------------------------
+
+class ConfigUpdateRequest(BaseModel):
+    max_interview_questions: int = Field(..., ge=1, le=20)
+    api_key: Optional[str] = Field(None)
+
+@router.post("/config/update")
+async def update_config(request: Request, config_update: ConfigUpdateRequest):
+    """
+    Update global configuration settings for the interview system.
+    Requires admin authentication.
+    """
+    global MAX_INTERVIEW_QUESTIONS, openai_api_key, openai_client
+    
+    # Verify authentication
+    token = request.cookies.get("token")
+    if not token:
+        logger.warning("No authentication token found")
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Authentication required"}
+        )
+        
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        is_admin = payload.get("isAdmin", False)
+        
+        if not is_admin:
+            logger.warning(f"Non-admin user attempted to update config: {payload.get('userId')}")
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Admin access required"}
+            )
+            
+        # Update max questions setting
+        if config_update.max_interview_questions != MAX_INTERVIEW_QUESTIONS:
+            old_value = MAX_INTERVIEW_QUESTIONS
+            MAX_INTERVIEW_QUESTIONS = config_update.max_interview_questions
+            logger.info(f"Updated MAX_INTERVIEW_QUESTIONS from {old_value} to {MAX_INTERVIEW_QUESTIONS}")
+            
+        # Update OpenAI API key if provided
+        if config_update.api_key:
+            openai_api_key = config_update.api_key
+            # Reinitialize client with new key
+            if openai is not None and hasattr(openai, 'OpenAI'):
+                openai_client = OpenAI(api_key=openai_api_key)
+                logger.info("Reinitialized OpenAI client with new API key")
+            elif openai is not None:
+                openai.api_key = openai_api_key
+                logger.info("Updated OpenAI API key for legacy client")
+                
+        return {
+            "status": "success",
+            "message": "Configuration updated successfully",
+            "config": {
+                "max_interview_questions": MAX_INTERVIEW_QUESTIONS,
+                "openai_model": OPENAI_MODEL,
+                "api_key_configured": bool(openai_api_key)
+            }
+        }
+    
+    except jwt.PyJWTError as e:
+        logger.error(f"JWT decode error: {e}")
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Invalid token"}
+        )
+    except Exception as e:
+        logger.error(f"Error updating config: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Error updating configuration: {str(e)}"}
+        )
+
+# ------------------------------------------------------------------
+# Update interview session settings
+# ------------------------------------------------------------------
+
+class SessionConfigUpdate(BaseModel):
+    max_questions: int = Field(..., ge=1, le=20)
+
+@router.patch("/sessions/{session_id}/config")
+async def update_session_config(session_id: str, config: SessionConfigUpdate, request: Request):
+    """
+    Update configuration for a specific interview session.
+    """
+    logger.info(f"Updating config for session: {session_id}")
+    
+    # Verify authentication
+    token = request.cookies.get("token")
+    if not token:
+        logger.warning("No authentication token found")
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Authentication required"}
+        )
+        
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        user_id = payload.get("userId")
+        is_admin = payload.get("isAdmin", False)
+        
+        # Check if MongoDB is available
+        if conversations_col is None:
+            logger.error("MongoDB not connected")
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "Database unavailable"}
+            )
+            
+        # Find the session
+        session = await conversations_col.find_one({"session_id": session_id})
+        if not session:
+            logger.warning(f"Session not found: {session_id}")
+            return JSONResponse(
+                status_code=404,
+                content={"detail": "Session not found"}
+            )
+            
+        # Check authorization (user owns session or is admin)
+        if session["user_id"] != user_id and not is_admin:
+            logger.warning(f"Unauthorized config update attempt: {user_id} for session {session_id}")
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Unauthorized access"}
+            )
+            
+        # Don't allow updates to finished sessions
+        if session.get("finished", False):
+            logger.warning(f"Attempted to update config for finished session: {session_id}")
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "Cannot update finished session"}
+            )
+            
+        # Update the session config
+        result = await conversations_col.update_one(
+            {"session_id": session_id},
+            {"$set": {"max_questions": config.max_questions}}
+        )
+        
+        if result.modified_count == 0:
+            logger.warning(f"Session config not updated: {session_id}")
+            return JSONResponse(
+                status_code=500,
+                content={"detail": "Failed to update session configuration"}
+            )
+            
+        logger.info(f"Updated max_questions to {config.max_questions} for session {session_id}")
+        return JSONResponse(
+            content={
+                "detail": "Session configuration updated successfully",
+                "session_id": session_id,
+                "max_questions": config.max_questions
+            }
+        )
+            
+    except jwt.PyJWTError as e:
+        logger.error(f"JWT decode error: {e}")
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Invalid token"}
+        )
+    except Exception as e:
+        logger.error(f"Error updating session config: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Error updating session configuration: {str(e)}"}
+        )
+
+# ------------------------------------------------------------------
+# Reset conversation endpoint
+# ------------------------------------------------------------------
+
+@router.post("/sessions/{session_id}/reset")
+async def reset_session(session_id: str, request: Request):
+    """
+    Reset an interview session to start over while keeping the same CV and job role.
+    """
+    logger.info(f"Resetting session: {session_id}")
+    
+    # Verify authentication
+    token = request.cookies.get("token")
+    if not token:
+        logger.warning("No authentication token found")
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Authentication required"}
+        )
+        
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        user_id = payload.get("userId")
+        is_admin = payload.get("isAdmin", False)
+        
+        # Check if MongoDB is available
+        if conversations_col is None:
+            logger.error("MongoDB not connected")
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "Database unavailable"}
+            )
+            
+        # Find the session
+        session = await conversations_col.find_one({"session_id": session_id})
+        if not session:
+            logger.warning(f"Session not found: {session_id}")
+            return JSONResponse(
+                status_code=404,
+                content={"detail": "Session not found"}
+            )
+            
+        # Check authorization
+        if session["user_id"] != user_id and not is_admin:
+            logger.warning(f"Unauthorized reset attempt: {user_id} for session {session_id}")
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Unauthorized access"}
+            )
+            
+        # Create initial AI message
+        job_role = session["job_role"]
+        initial_ai_text = (
+            f"Thank you for uploading your CV for the {job_role} position. "
+            "Let's begin the interview. Can you tell me about yourself?"
+        )
+        
+        # Reset the session
+        result = await conversations_col.update_one(
+            {"session_id": session_id},
+            {
+                "$set": {
+                    "messages": [{"sender": "ai", "text": initial_ai_text}],
+                    "finished": False,
+                    "created_at": datetime.utcnow()
+                }
+            }
+        )
+        
+        if result.modified_count == 0:
+            logger.warning(f"Session not reset: {session_id}")
+            return JSONResponse(
+                status_code=500,
+                content={"detail": "Failed to reset session"}
+            )
+            
+        logger.info(f"Successfully reset session {session_id}")
+        return JSONResponse(
+            content={
+                "detail": "Session reset successfully",
+                "session_id": session_id,
+                "first_ai_message": {"sender": "ai", "text": initial_ai_text}
+            }
+        )
+            
+    except jwt.PyJWTError as e:
+        logger.error(f"JWT decode error: {e}")
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Invalid token"}
+        )
+    except Exception as e:
+        logger.error(f"Error resetting session: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Error resetting session: {str(e)}"}
+        )
+
+# ------------------------------------------------------------------
+# Direct OpenAI CV Processing Endpoint
+# ------------------------------------------------------------------
+
+import base64
+
+@router.post("/process-cv-with-ai")
+async def process_cv_with_ai(cv_file: UploadFile = File(...)):
+    """
+    Process a CV file directly with OpenAI's vision model.
+    Use this as a fallback when other extraction methods fail.
+    """
+    if openai_client is None:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "OpenAI client not configured"}
+        )
+    
+    try:
+        # Save file
+        file_path = await save_cv_to_disk(cv_file)
+        logger.info(f"CV saved for AI processing: {file_path}")
+        
+        # Determine file type
+        file_ext = os.path.splitext(file_path)[1].lower()
+        
+        # Prepare content type
+        if file_ext in ['.pdf']:
+            content_type = "application/pdf"
+        elif file_ext in ['.jpg', '.jpeg']:
+            content_type = "image/jpeg"
+        elif file_ext in ['.png']:
+            content_type = "image/png"
+        else:
+            content_type = "application/octet-stream"
+        
+        # Read file content
+        with open(file_path, "rb") as f:
+            file_content = f.read()
+            
+        # Encode as base64
+        file_b64 = base64.b64encode(file_content).decode('utf-8')
+        
+        # Call OpenAI vision model
+        try:
+            response = openai_client.chat.completions.create(
+                model="gpt-4.1",  # Use vision-capable model
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant that extracts text content from resume/CV documents."},
+                    {"role": "user", "content": [
+                        {"type": "text", "text": "Extract and organize all text content from this CV/resume document. Include all sections like personal info, education, experience, skills, etc. in a clean, structured format."},
+                        {"type": "image_url", "image_url": {"url": f"data:{content_type};base64,{file_b64}"}}
+                    ]}
+                ],
+                max_tokens=4000
+            )
+            
+            extracted_text = response.choices[0].message.content
+            logger.info(f"Successfully extracted {len(extracted_text)} characters with OpenAI")
+            
+            return {
+                "status": "success",
+                "filename": cv_file.filename,
+                "file_size": len(file_content),
+                "extracted_text_length": len(extracted_text),
+                "text_sample": extracted_text[:500] + "..." if len(extracted_text) > 500 else extracted_text,
+                "method": "openai_vision"
+            }
+            
+        except Exception as e:
+            logger.error(f"OpenAI processing error: {e}")
+            return JSONResponse(
+                status_code=500,
+                content={"detail": f"OpenAI processing error: {str(e)}"}
+            )
+    
+    except Exception as e:
+        logger.error(f"Error processing CV with AI: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Error processing CV with AI: {str(e)}"}
+        )
