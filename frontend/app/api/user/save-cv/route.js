@@ -52,7 +52,7 @@ export async function POST(request) {
     const bytes = await cvFile.arrayBuffer();
     const buffer = Buffer.from(bytes);
     
-    // Create upload directory if it doesn't exist
+    // IMPORTANT: Create upload directory in the shared volume location
     const uploadDir = join(process.cwd(), 'uploads');
     try {
       await mkdir(uploadDir, { recursive: true });
@@ -62,62 +62,101 @@ export async function POST(request) {
       console.log(`Upload directory exists or error: ${err.message}`);
     }
     
-    // Generate unique filename
-    const filename = `${new mongoose.Types.ObjectId().toString()}_${cvFile.name}`;
+    // Generate timestamp-based ID for consistent naming
+    const timestamp = new Date();
+    const timestampStr = timestamp.toISOString().replace(/[:.]/g, '-');
+    const randomSuffix = Math.random().toString(36).substring(2, 8);
+    const fileId = `${timestampStr}_${randomSuffix}`;
+    
+    // Clean the original filename to avoid spaces and special characters
+    const cleanFileName = cvFile.name.replace(/[^a-zA-Z0-9.-]/g, '_');
+    
+    // Create consistent filename with timestamp
+    const filename = `${fileId}_${cleanFileName}`;
     const filePath = join(uploadDir, filename);
+    
+    // IMPORTANT: Store container-consistent paths to fix path issues
+    // This is the path that will be consistent across containers
+    const containerFilePath = `/app/uploads/${filename}`;
     
     // Write file to disk
     await writeFile(filePath, buffer);
-    console.log(`CV file saved to: ${filePath}`);
+    console.log(`CV file saved to local path: ${filePath}`);
+    console.log(`CV file container path: ${containerFilePath}`);
     
     // Connect to database
     await connectToDatabase();
     
-    // Try to extract text from CV - in a real app you'd have more robust extraction logic
-    // For now, just save file metadata
-    
-    // Save to MongoDB
+    // Save to MongoDB with container-consistent path and timestamp ID
     const cvRecord = new CV({
+      _id: new mongoose.Types.ObjectId(), // MongoDB still needs its own ObjectId
       userId: new mongoose.Types.ObjectId(userId),
       filename: filename,
       originalName: cvFile.name,
       fileSize: buffer.length,
-      filePath: filePath,
+      filePath: containerFilePath, // Use the container path here
       contentType: cvFile.type || 'application/octet-stream',
-      extractedText: '', // Set empty for now
-      uploadedAt: new Date(),
-      lastUsed: new Date()
+      extractedText: '', // Set empty for now, will be updated by FastAPI
+      uploadedAt: timestamp,
+      lastUsed: timestamp,
+      fileId: fileId // Store the timestamp-based ID for reference
     });
     
     await cvRecord.save();
     console.log(`CV record saved to database with ID: ${cvRecord._id}`);
+    console.log(`CV file ID (timestamp-based): ${fileId}`);
     
-    // Also try to save CV to FastAPI for redundancy
+    // Also try to save CV to FastAPI for text extraction
     try {
       const fastApiUrl = process.env.FASTAPI_URL || "http://fastapi:8000";
       const endpoint = `${fastApiUrl}/api/cv/save-cv`;
       
-      const apiFormData = new FormData();
-      apiFormData.append("cv_file", cvFile);
+      console.log(`Sending CV to FastAPI at ${endpoint}`);
       
+      // Create a new FormData object to send to FastAPI
+      const apiFormData = new FormData();
+      
+      // Create a new file object from the original file
+      const file = new File([buffer], filename, {
+        type: cvFile.type || 'application/octet-stream'
+      });
+      
+      apiFormData.append("cv_file", file);
+      apiFormData.append("cv_id", cvRecord._id.toString());
+      apiFormData.append("file_id", fileId); // Send the timestamp ID too
+      apiFormData.append("file_path", containerFilePath);
+      
+      // Include auth token
       const headers = {
         "Authorization": `Bearer ${token}`,
         "Cookie": `token=${token}`
       };
       
-      fetch(endpoint, {
+      // Send to FastAPI (synchronous to ensure file is processed)
+      const response = await fetch(endpoint, {
         method: "POST",
         headers: headers,
         body: apiFormData
-      }).then(res => {
-        if (res.ok) {
-          console.log("CV also saved to FastAPI");
-        } else {
-          console.warn("Failed to save CV to FastAPI");
-        }
-      }).catch(err => {
-        console.error("Error saving CV to FastAPI:", err);
       });
+      
+      if (response.ok) {
+        console.log("CV successfully sent to FastAPI");
+        const data = await response.json();
+        
+        if (data && data.extracted_text) {
+          // Update our MongoDB record with the extracted text
+          console.log(`Received extracted text (${data.extracted_text.length} chars), updating MongoDB`);
+          await CV.findByIdAndUpdate(
+            cvRecord._id, 
+            { extractedText: data.extracted_text }
+          );
+          console.log("CV record updated with extracted text");
+        }
+      } else {
+        console.warn(`Failed to send CV to FastAPI, status: ${response.status}`);
+        const errorText = await response.text();
+        console.warn("Error details:", errorText);
+      }
     } catch (apiErr) {
       console.error("Error calling FastAPI save-cv endpoint:", apiErr);
       // Continue anyway, we saved the CV locally
@@ -132,7 +171,8 @@ export async function POST(request) {
         filename: cvFile.name,
         size: buffer.length,
         uploadedAt: cvRecord.uploadedAt,
-        lastUsed: cvRecord.lastUsed
+        lastUsed: cvRecord.lastUsed,
+        fileId: fileId
       }
     });
   } catch (error) {

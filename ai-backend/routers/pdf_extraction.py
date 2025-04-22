@@ -25,6 +25,14 @@ except ImportError:
     logger.warning("pdf2image not installed, PDF to image conversion unavailable")
     PDF2IMAGE_AVAILABLE = False
 
+# Try importing pymupdf (fitz) for enhanced PDF extraction
+try:
+    import fitz  # PyMuPDF
+    PYMUPDF_AVAILABLE = True
+except ImportError:
+    logger.warning("PyMuPDF not installed, falling back to other methods")
+    PYMUPDF_AVAILABLE = False
+
 def extract_text_from_pdf_with_pypdf2(file_path: str) -> str:
     """Extract text from PDF using PyPDF2."""
     try:
@@ -40,6 +48,24 @@ def extract_text_from_pdf_with_pypdf2(file_path: str) -> str:
             return text
     except Exception as e:
         logger.error(f"Error extracting text with PyPDF2: {e}")
+        return ""
+
+def extract_text_with_pymupdf(file_path: str) -> str:
+    """Extract text from PDF using PyMuPDF (fitz)."""
+    if not PYMUPDF_AVAILABLE:
+        return ""
+        
+    try:
+        logger.info(f"Extracting text from PDF with PyMuPDF: {file_path}")
+        doc = fitz.open(file_path)
+        text = ""
+        for page_num in range(len(doc)):
+            text += doc[page_num].get_text() + "\n"
+        
+        logger.info(f"Extracted {len(text)} characters with PyMuPDF")
+        return text
+    except Exception as e:
+        logger.error(f"Error extracting text with PyMuPDF: {e}")
         return ""
 
 def check_for_pdftotext() -> bool:
@@ -143,48 +169,89 @@ def extract_text_with_openai(file_path: str, openai_client=None) -> str:
         file_b64 = base64.b64encode(file_content).decode('utf-8')
         
         # Call OpenAI vision model
-        response = openai_client.chat.completions.create(
-            model="gpt-4.1",  # Use vision-capable model
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant that extracts text content from resume/CV documents."},
-                {"role": "user", "content": [
-                    {"type": "text", "text": "Extract and organize all text content from this CV/resume document. Include all sections like personal info, education, experience, skills, etc. in a clean, structured format."},
-                    {"type": "image_url", "image_url": {"url": f"data:{content_type};base64,{file_b64}"}}
-                ]}
-            ],
-            max_tokens=4000
-        )
-        
-        extracted_text = response.choices[0].message.content
-        logger.info(f"Successfully extracted {len(extracted_text)} characters with OpenAI Vision API")
-        return extracted_text
-        
+        # Try with gpt-4.1-mini first, which is faster and less expensive
+        try:
+            response = openai_client.chat.completions.create(
+                model="gpt-4.1-mini",  # Start with a smaller, faster model
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant that extracts text content from resume/CV documents."},
+                    {"role": "user", "content": [
+                        {"type": "text", "text": "Extract and organize all text content from this CV/resume document. Include all sections like personal info, education, experience, skills, etc. in a clean, structured format."},
+                        {"type": "image_url", "image_url": {"url": f"data:{content_type};base64,{file_b64}"}}
+                    ]}
+                ],
+                max_tokens=4000
+            )
+            
+            extracted_text = response.choices[0].message.content
+            
+            # If the result is too short, try with the full model
+            if len(extracted_text.strip()) < 100:
+                logger.info("Minimal text extracted with gpt-4.1-mini, trying with full gpt-4.1 model")
+                raise ValueError("Insufficient text extracted, trying larger model")
+                
+            logger.info(f"Successfully extracted {len(extracted_text)} characters with OpenAI gpt-4.1-mini")
+            return extracted_text
+            
+        except Exception as mini_err:
+            # If the mini model fails or returns insufficient text, try the larger model
+            logger.info(f"Trying extraction with full gpt-4.1 model: {str(mini_err)}")
+            
+            response = openai_client.chat.completions.create(
+                model="gpt-4.1",  # Full vision model
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant that extracts text content from resume/CV documents."},
+                    {"role": "user", "content": [
+                        {"type": "text", "text": "Extract and organize all text content from this CV/resume document. Include all sections like personal info, education, experience, skills, etc. in a clean, structured format."},
+                        {"type": "image_url", "image_url": {"url": f"data:{content_type};base64,{file_b64}"}}
+                    ]}
+                ],
+                max_tokens=4000
+            )
+            
+            extracted_text = response.choices[0].message.content
+            logger.info(f"Successfully extracted {len(extracted_text)} characters with OpenAI gpt-4.1")
+            return extracted_text
+            
     except Exception as e:
         logger.error(f"Error extracting text with OpenAI Vision API: {e}")
-        return f"Error extracting text with OpenAI: {str(e)}"
+        return ""
 
 def extract_text_from_document(file_path: str, vision_client=None, openai_client=None) -> str:
-    """Extract text from document based on file type."""
+    """
+    Extract text from a document file using multiple methods and select the best result.
+    Tries various extraction techniques and returns the one with the most content.
+    """
+    if not os.path.exists(file_path):
+        logger.error(f"File not found: {file_path}")
+        return f"File not found: {file_path}"
+        
     file_type = get_file_type(file_path)
     logger.info(f"Extracting text from {file_type} file: {file_path}")
     
+    # Store all successful extraction results
+    extraction_results = []
+    
     if file_type == 'pdf':
-        # Try multiple methods in order of preference
-        text = ""
-        
-        # 1. Try PyPDF2 first (pure Python, no dependencies)
+        # 1. Try PyPDF2
         if PYPDF2_AVAILABLE:
             text = extract_text_from_pdf_with_pypdf2(file_path)
-            if text and len(text.strip()) > 100:  # If we got meaningful text
-                return text
+            if text:
+                extraction_results.append((text, "PyPDF2", len(text)))
         
-        # 2. Try pdftotext if available (better extraction)
+        # 2. Try PyMuPDF (usually better than PyPDF2)
+        if PYMUPDF_AVAILABLE:
+            text = extract_text_with_pymupdf(file_path)
+            if text:
+                extraction_results.append((text, "PyMuPDF", len(text)))
+        
+        # 3. Try pdftotext utility (usually high quality)
         if check_for_pdftotext():
             text = extract_text_with_pdftotext(file_path)
-            if text and len(text.strip()) > 100:  # If we got meaningful text
-                return text
+            if text:
+                extraction_results.append((text, "pdftotext", len(text)))
         
-        # 3. If the previous methods failed, try Vision API on converted images
+        # 4. Try Vision API on converted images
         if PDF2IMAGE_AVAILABLE and vision_client:
             logger.info("Attempting to extract text using PDF to image conversion and Vision API")
             image_paths = convert_pdf_to_images(file_path)
@@ -210,26 +277,17 @@ def extract_text_from_document(file_path: str, vision_client=None, openai_client
                 except Exception as e:
                     logger.error(f"Error processing image {img_path}: {e}")
             
-            if combined_text and len(combined_text.strip()) > 100:
-                logger.info(f"Extracted {len(combined_text)} characters using Vision API on images")
-                return combined_text
+            if combined_text:
+                extraction_results.append((combined_text, "Google Vision", len(combined_text)))
         
-        # 4. Try OpenAI Vision API as a last resort (best for image-based PDFs)
+        # 5. Try OpenAI Vision API (often best for complex PDFs)
         if openai_client:
-            logger.info("Attempting to extract text using OpenAI Vision API")
             openai_text = extract_text_with_openai(file_path, openai_client)
-            if openai_text and len(openai_text.strip()) > 100:
-                return openai_text
-        
-        # If we got any text from previous methods but it was too short
-        if text:
-            return text
-            
-        # Fallback message if all methods failed
-        return f"Failed to extract text from PDF file: {os.path.basename(file_path)}. The PDF may be scanned, image-based, or secured."
-        
+            if openai_text:
+                extraction_results.append((openai_text, "OpenAI Vision", len(openai_text)))
+                
     elif file_type == 'image':
-        # First try Google Vision API
+        # For images, try both Google Vision and OpenAI
         if vision_client:
             try:
                 with open(file_path, "rb") as f:
@@ -239,37 +297,41 @@ def extract_text_from_document(file_path: str, vision_client=None, openai_client
                 image = vision.Image(content=content)
                 response = vision_client.document_text_detection(image=image)
                 
-                if response.error.message:
-                    logger.error(f"Vision API error: {response.error.message}")
-                    # Fall back to OpenAI if Vision API fails
-                    if openai_client:
-                        logger.info("Falling back to OpenAI Vision API for image")
-                        return extract_text_with_openai(file_path, openai_client)
-                    return f"Error extracting text: {response.error.message}"
-                    
-                extracted_text = response.full_text_annotation.text
-                # If Vision API returns limited text, try OpenAI
-                if len(extracted_text.strip()) < 100 and openai_client:
-                    logger.info("Vision API returned limited text, trying OpenAI Vision API")
-                    openai_text = extract_text_with_openai(file_path, openai_client)
-                    if openai_text and len(openai_text.strip()) > len(extracted_text.strip()):
-                        return openai_text
-                
-                logger.info(f"Extracted {len(extracted_text)} characters from image")
-                return extracted_text
+                if not response.error.message:
+                    extracted_text = response.full_text_annotation.text
+                    if extracted_text:
+                        extraction_results.append((extracted_text, "Google Vision", len(extracted_text)))
             except Exception as e:
-                logger.error(f"Error extracting text from image: {e}")
-                # Fall back to OpenAI if Vision API fails
-                if openai_client:
-                    logger.info("Falling back to OpenAI Vision API after Vision API error")
-                    return extract_text_with_openai(file_path, openai_client)
-                return f"Error extracting text from image: {str(e)}"
-        # If Vision client not available, try OpenAI
-        elif openai_client:
-            logger.info("Vision API not available, using OpenAI Vision API for image")
-            return extract_text_with_openai(file_path, openai_client)
-        else:
-            return "No text extraction services available for image"
+                logger.error(f"Error with Google Vision: {e}")
+                
+        if openai_client:
+            openai_text = extract_text_with_openai(file_path, openai_client)
+            if openai_text:
+                extraction_results.append((openai_text, "OpenAI Vision", len(openai_text)))
     
-    # Fallback for unsupported file types
-    return f"Unsupported file type: {file_type}. Please upload a PDF or image file."
+    # Try direct text reading as last resort
+    try:
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            text = f.read()
+            if text and len(text.strip()) > 20:  # Only use if meaningful content found
+                extraction_results.append((text, "Direct Text Read", len(text)))
+    except Exception as e:
+        logger.debug(f"Direct text read failed: {e}")
+    
+    # Choose the best extraction result
+    if extraction_results:
+        # Log all extraction methods and their results
+        logger.info(f"Text extracted using {len(extraction_results)} methods:")
+        for text, method, length in extraction_results:
+            logger.info(f"  - {method}: {length} characters")
+        
+        # Sort by text length (generally, more text = better extraction)
+        extraction_results.sort(key=lambda x: x[2], reverse=True)
+        best_text, best_method, length = extraction_results[0]
+        
+        logger.info(f"Selected extraction method: {best_method} with {length} characters")
+        return best_text
+    
+    # If all methods failed
+    logger.error(f"All text extraction methods failed for file: {file_path}")
+    return f"Failed to extract text from file: {os.path.basename(file_path)}. The file may be corrupt, empty, or in an unsupported format."

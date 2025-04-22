@@ -7,11 +7,14 @@ import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
-from fastapi import APIRouter, File, UploadFile, Form, HTTPException, status, Request
+from fastapi import APIRouter, File, UploadFile, Form, HTTPException, status, Request, Header
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 import jwt
 import motor.motor_asyncio
+
+# Import text extraction
+from .interviewprep import extract_text_from_document, vision_client, openai_client
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -60,93 +63,238 @@ router = APIRouter()
 logger.info("CV API Router created")
 
 # ------------------------------------------------------------------
+# Helper Functions
+# ------------------------------------------------------------------
+
+def ensure_uploads_dir():
+    """Ensure the uploads directory exists in the FastAPI container"""
+    uploads_dir = "/app/uploads"
+    os.makedirs(uploads_dir, exist_ok=True)
+    logger.info(f"Ensuring uploads directory exists: {uploads_dir}")
+    return uploads_dir
+
+async def get_token_from_request(request: Request):
+    """Extract token from request cookies, headers, or body"""
+    # Try to get token from cookies
+    token = request.cookies.get("token")
+    
+    # Try Authorization header if no cookie
+    if not token:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header[7:]  # Remove 'Bearer ' prefix
+    
+    # No valid token found
+    if not token:
+        return None
+        
+    return token
+
+def clean_filename(filename):
+    """Clean the filename to avoid spaces and special characters"""
+    return ''.join(c if c.isalnum() or c in '.-_' else '_' for c in filename)
+
+# ------------------------------------------------------------------
 # Routes
 # ------------------------------------------------------------------
+
 @router.post("/save-cv")
-async def save_cv(request: Request, cv_file: UploadFile = File(...)):
+async def save_cv(
+    request: Request,
+    cv_file: UploadFile = File(...),
+    cv_id: Optional[str] = Form(None),
+    file_path: Optional[str] = Form(None),
+    authorization: Optional[str] = Header(None)
+):
     """
-    Save a CV to the database.
+    Save a CV file and extract text from it.
+    This endpoint can handle both new CVs and existing CVs being updated.
     """
-    logger.info(f"Saving CV: {cv_file.filename}")
+    logger.info(f"Received CV file: {cv_file.filename}, ID: {cv_id}, Path: {file_path}")
+    
+    # Get token from various sources
+    token = await get_token_from_request(request)
+    if not token and authorization:
+        if authorization.startswith("Bearer "):
+            token = authorization[7:]
+    
+    if not token:
+        logger.warning("No authentication token found")
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Authentication required"}
+        )
+    
+    # Verify token
     try:
-        # Verify authentication
-        token = request.cookies.get("token")
-        if not token:
-            logger.warning("No authentication token found")
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        user_id = payload.get("userId")
+        if not user_id:
+            logger.warning("Invalid token: missing userId")
             return JSONResponse(
                 status_code=401,
-                content={"detail": "Authentication required"}
+                content={"detail": "Invalid authentication token"}
+            )
+        logger.info(f"User authenticated: {user_id}")
+    except jwt.PyJWTError as e:
+        logger.error(f"JWT decode error: {e}")
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Invalid token"}
+        )
+    
+    # Ensure the upload directory exists
+    ensure_uploads_dir()
+    
+    # If we have an existing CV ID, check the database
+    from bson.objectid import ObjectId
+    existing_cv = None
+    
+    if cv_id:
+        try:
+            cv_object_id = ObjectId(cv_id)
+            existing_cv = await cvs_col.find_one({"_id": cv_object_id})
+            
+            if existing_cv and str(existing_cv.get("userId", "")) != user_id:
+                logger.warning(f"CV belongs to user {existing_cv.get('userId')}, not {user_id}")
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Unauthorized access to CV"}
+                )
+                
+            if existing_cv:
+                logger.info(f"Found existing CV record with ID: {cv_id}")
+        except Exception as e:
+            logger.error(f"Error finding CV document: {e}")
+            # Continue as if it's a new CV
+    
+    # Determine file path
+    if file_path and file_path.startswith('/app/uploads/'):
+        # Use provided file path if it's in the correct location
+        actual_file_path = file_path
+        logger.info(f"Using provided file path: {actual_file_path}")
+    else:
+        # Generate a new path using a consistent format
+        file_id = cv_id if cv_id else str(ObjectId())
+        clean_filename_str = clean_filename(cv_file.filename)
+        actual_file_path = f"/app/uploads/{file_id}_{clean_filename_str}"
+        logger.info(f"Generated new file path: {actual_file_path}")
+    
+    # Save the file
+    try:
+        # Read the file content
+        file_content = await cv_file.read()
+        
+        # Write the file to disk
+        with open(actual_file_path, "wb") as f:
+            f.write(file_content)
+            
+        logger.info(f"CV file saved to: {actual_file_path}")
+        
+        # Reset file position for potential reuse
+        await cv_file.seek(0)
+    except Exception as e:
+        logger.error(f"Error saving CV file: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Error saving CV file: {str(e)}"}
+        )
+    
+    # Extract text from the CV file
+    extracted_text = ""
+    try:
+        logger.info(f"Attempting to extract text from file at: {actual_file_path}")
+        
+        # Check if file exists before extraction
+        if not os.path.exists(actual_file_path):
+            logger.error(f"File does not exist at path: {actual_file_path}")
+            # Try direct file content extraction if file save failed
+            file_content = await cv_file.read()
+            
+            # Create a temporary file
+            temp_path = f"/tmp/{uuid.uuid4()}.tmp"
+            with open(temp_path, "wb") as f:
+                f.write(file_content)
+                
+            logger.info(f"Created temporary file at: {temp_path}")
+            actual_file_path = temp_path
+        
+        # Now extract text
+        extracted_text = extract_text_from_document(actual_file_path, vision_client, openai_client)
+        logger.info(f"Successfully extracted {len(extracted_text)} characters from CV")
+    except Exception as e:
+        logger.error(f"Error extracting text from CV: {e}")
+        # Continue even if extraction fails
+    
+    # Save or update CV in MongoDB
+    if existing_cv:
+        # Update existing record
+        try:
+            update_result = await cvs_col.update_one(
+                {"_id": ObjectId(cv_id)},
+                {"$set": {
+                    "filename": os.path.basename(actual_file_path),
+                    "originalName": cv_file.filename,
+                    "fileSize": len(file_content),
+                    "filePath": actual_file_path,
+                    "contentType": cv_file.content_type or "application/octet-stream",
+                    "extractedText": extracted_text,
+                    "lastUsed": datetime.utcnow()
+                }}
             )
             
-        try:
-            payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-            user_id = payload.get("userId")
-            if not user_id:
-                logger.warning("Invalid token: missing userId")
-                return JSONResponse(
-                    status_code=401,
-                    content={"detail": "Invalid authentication token"}
-                )
-            logger.info(f"User authenticated: {user_id}")
-        except jwt.PyJWTError as e:
-            logger.error(f"JWT decode error: {e}")
+            if update_result.modified_count > 0:
+                logger.info(f"Updated CV document with ID: {cv_id}")
+            else:
+                logger.warning(f"CV document not updated: {cv_id}")
+                
+            return JSONResponse(content={
+                "status": "success",
+                "detail": "CV updated successfully",
+                "cv_id": cv_id,
+                "file_path": actual_file_path,
+                "extracted_text": extracted_text,
+                "text_length": len(extracted_text)
+            })
+        except Exception as e:
+            logger.error(f"Error updating CV document: {e}")
             return JSONResponse(
-                status_code=401,
-                content={"detail": f"Invalid token: {str(e)}"}
+                status_code=500,
+                content={"detail": f"Error updating CV document: {str(e)}"}
             )
-
-        # Save CV file
-        os.makedirs("uploads", exist_ok=True)
-        file_ext = os.path.splitext(cv_file.filename)[1]
-        file_name = f"{uuid.uuid4()}{file_ext}"
-        file_path = os.path.join("uploads", file_name)
-        content = await cv_file.read()
-        
-        with open(file_path, "wb") as f:
-            f.write(content)
-        logger.info(f"CV saved to: {file_path}")
-        
-        # Save CV to MongoDB
-        if cvs_col is not None:
+    else:
+        # Create new record
+        try:
             cv_data = {
-                "user_id": user_id,
-                "filename": file_name,
-                "original_name": cv_file.filename,
-                "file_size": len(content),
-                "file_path": file_path,
-                "content_type": cv_file.content_type or "application/octet-stream",
-                "uploaded_at": datetime.utcnow(),
-                "last_used": datetime.utcnow()
+                "userId": user_id,  # Match the field name in your schema
+                "filename": os.path.basename(actual_file_path),
+                "originalName": cv_file.filename,
+                "fileSize": len(file_content),
+                "filePath": actual_file_path,
+                "contentType": cv_file.content_type or "application/octet-stream",
+                "extractedText": extracted_text,
+                "uploadedAt": datetime.utcnow(),
+                "lastUsed": datetime.utcnow()
             }
             
             result = await cvs_col.insert_one(cv_data)
-            cv_id = str(result.inserted_id)
-            logger.info(f"CV saved to MongoDB with ID: {cv_id}")
+            new_cv_id = str(result.inserted_id)
+            logger.info(f"New CV saved to MongoDB with ID: {new_cv_id}")
             
-            # Return success response
             return JSONResponse(content={
                 "status": "success",
-                "cv": {
-                    "id": cv_id,
-                    "filename": cv_file.filename,
-                    "size": len(content),
-                    "uploaded_at": cv_data["uploaded_at"].isoformat(),
-                    "last_used": cv_data["last_used"].isoformat()
-                }
+                "detail": "CV saved successfully",
+                "cv_id": new_cv_id,
+                "file_path": actual_file_path,
+                "extracted_text": extracted_text,
+                "text_length": len(extracted_text)
             })
-        else:
-            logger.warning("MongoDB not available, CV metadata not saved")
+        except Exception as e:
+            logger.error(f"Error creating CV document: {e}")
             return JSONResponse(
                 status_code=500,
-                content={"detail": "Database unavailable"}
+                content={"detail": f"Error saving CV metadata: {str(e)}"}
             )
-    
-    except Exception as e:
-        logger.error(f"Error saving CV: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"detail": f"Error saving CV: {str(e)}"}
-        )
 
 @router.get("/cvs/{user_id}")
 async def get_user_cvs(user_id: str, request: Request):
@@ -156,7 +304,7 @@ async def get_user_cvs(user_id: str, request: Request):
     logger.info(f"Getting CVs for user: {user_id}")
     
     # Verify authentication
-    token = request.cookies.get("token")
+    token = await get_token_from_request(request)
     if not token:
         logger.warning("No authentication token found")
         return JSONResponse(
@@ -192,19 +340,27 @@ async def get_user_cvs(user_id: str, request: Request):
         
     # Retrieve CVs
     try:
-        cursor = cvs_col.find({"user_id": user_id}).sort("last_used", -1)  # Newest first
+        # Try both field names to support both schemas (userId and user_id)
+        cursor = cvs_col.find({"$or": [{"userId": user_id}, {"user_id": user_id}]}).sort("lastUsed", -1)  # Newest first
         cvs = await cursor.to_list(length=100)  # Limit to 100 CVs
         
         # Format the response
         formatted_cvs = []
         for cv in cvs:
+            # Handle both field naming conventions
+            original_name = cv.get("originalName", cv.get("original_name", "Unknown"))
+            file_size = cv.get("fileSize", cv.get("file_size", 0))
+            uploaded_at = cv.get("uploadedAt", cv.get("uploaded_at", datetime.utcnow()))
+            last_used = cv.get("lastUsed", cv.get("last_used", datetime.utcnow()))
+            content_type = cv.get("contentType", cv.get("content_type", "application/octet-stream"))
+            
             formatted_cvs.append({
                 "id": str(cv["_id"]),
-                "filename": cv["original_name"],
-                "size": cv["file_size"],
-                "uploaded_at": cv["uploaded_at"].isoformat(),
-                "last_used": cv["last_used"].isoformat(),
-                "content_type": cv["content_type"]
+                "filename": original_name,
+                "size": file_size,
+                "uploaded_at": uploaded_at.isoformat() if isinstance(uploaded_at, datetime) else uploaded_at,
+                "last_used": last_used.isoformat() if isinstance(last_used, datetime) else last_used,
+                "content_type": content_type
             })
             
         logger.info(f"Retrieved {len(formatted_cvs)} CVs for user {user_id}")
@@ -225,7 +381,7 @@ async def delete_cv(cv_id: str, request: Request):
     logger.info(f"Deleting CV: {cv_id}")
     
     # Verify authentication
-    token = request.cookies.get("token")
+    token = await get_token_from_request(request)
     if not token:
         logger.warning("No authentication token found")
         return JSONResponse(
@@ -262,19 +418,23 @@ async def delete_cv(cv_id: str, request: Request):
                 content={"detail": "CV not found"}
             )
         
-        # Check if user owns the CV
-        if cv["user_id"] != user_id:
+        # Check if user owns the CV (check both field naming conventions)
+        cv_owner = cv.get("userId", cv.get("user_id", ""))
+        if str(cv_owner) != user_id:
             logger.warning(f"Unauthorized delete attempt: {user_id} trying to delete CV {cv_id}")
             return JSONResponse(
                 status_code=403,
                 content={"detail": "Unauthorized access"}
             )
         
+        # Get file path (check both naming conventions)
+        file_path = cv.get("filePath", cv.get("file_path", ""))
+        
         # Delete file from disk if it exists
         try:
-            if os.path.exists(cv["file_path"]):
-                os.remove(cv["file_path"])
-                logger.info(f"Deleted CV file from disk: {cv['file_path']}")
+            if file_path and os.path.exists(file_path):
+                os.remove(file_path)
+                logger.info(f"Deleted CV file from disk: {file_path}")
         except Exception as file_error:
             logger.error(f"Error deleting CV file: {file_error}")
             # Continue with deleting the database record even if file deletion fails

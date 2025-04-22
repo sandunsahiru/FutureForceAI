@@ -2,11 +2,11 @@
 import mongoose from 'mongoose';
 
 const CVSchema = new mongoose.Schema({
-  userId: { 
-    type: mongoose.Schema.Types.ObjectId, 
-    ref: 'User', 
-    required: true 
-  },
+    userId: { 
+        type: mongoose.Schema.Types.Mixed, // Accepts both string and ObjectId
+        ref: 'User', 
+        required: true 
+      },
   filename: { 
     type: String, 
     required: true 
@@ -37,6 +37,11 @@ const CVSchema = new mongoose.Schema({
   lastUsed: { 
     type: Date, 
     default: Date.now 
+  },
+  // New field for timestamp-based ID for consistent file naming
+  fileId: {
+    type: String,
+    index: true  // Add index for faster lookups by fileId
   }
 });
 

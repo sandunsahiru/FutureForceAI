@@ -89,8 +89,9 @@ initialize()
 logger.info("Registering interviewprep router with prefix: /api/interview")
 app.include_router(interviewprep_router, prefix="/api/interview", tags=["InterviewPrep"])
 
-logger.info("Registering CV router with prefix: /api/cv")
-app.include_router(cv_router, prefix="/api/cv", tags=["CV"])
+# Changed: Update the CV router prefix to match the frontend's expected path
+logger.info("Registering CV router with prefix: /api/user")
+app.include_router(cv_router, prefix="/api/user", tags=["CV"])
 
 # Register the saved CV router
 # Note: We don't add a prefix here since the saved_cv_router already includes the full path

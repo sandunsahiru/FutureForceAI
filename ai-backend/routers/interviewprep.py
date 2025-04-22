@@ -1,14 +1,16 @@
 import os
 import uuid
 import logging
+import random
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
-from fastapi import APIRouter, File, UploadFile, Form, HTTPException, status, Request
+from fastapi import APIRouter, File, UploadFile, Form, HTTPException, status, Request, BackgroundTasks
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 import jwt
 import base64
+from bson import ObjectId
 
 # Import our improved PDF extraction module
 # Save the module as pdf_extraction.py in the same directory
@@ -403,8 +405,9 @@ def format_conversation(messages: List[Dict[str, str]]) -> str:
 @router.post("/start")
 async def start_interview(
     request: Request,
-    cv_file: Optional[UploadFile] = None,
+    background_tasks: BackgroundTasks,
     job_role: Optional[str] = Form(None),
+    cv_file: Optional[UploadFile] = None,
     cv_id: Optional[str] = Form(None),
     auth_token: Optional[str] = Form(None),
     max_questions: Optional[int] = Form(MAX_INTERVIEW_QUESTIONS),
@@ -479,14 +482,85 @@ async def start_interview(
 
         # 4) Handle CV content
         cv_text = None
+        stored_cv_id = None
+        
+        # Import the CV utilities module
+        try:
+            from .cv_utils import (
+                ensure_uploads_dir, generate_timestamp_id, clean_filename,
+                get_potential_file_paths, save_cv_to_db, find_cv_by_id
+            )
+        except ImportError:
+            logger.warning("cv_utils module not found, using built-in functions")
+            # Use basic functionality if module not available
+            ensure_uploads_dir = lambda: os.makedirs("/app/uploads", exist_ok=True) or "/app/uploads"
+            generate_timestamp_id = lambda: f"{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}-{''.join(random.choices('abcdefghijklmnopqrstuvwxyz0123456789', k=6))}"
+            clean_filename = lambda f: f.replace(' ', '_').replace('/', '_').replace('\\', '_')
         
         # Process CV based on whether we have a file or ID
         if cv_file:
             logger.info(f"Processing uploaded CV file: {cv_file.filename}")
             try:
-                file_path = await save_cv_to_disk(cv_file)
+                # Ensure uploads directory exists
+                uploads_dir = ensure_uploads_dir()
+                
+                # Generate a timestamp-based ID
+                timestamp_id = generate_timestamp_id()
+                
+                # Create filename with timestamp ID
+                clean_filename_str = clean_filename(cv_file.filename)
+                filename = f"{timestamp_id}_{clean_filename_str}"
+                file_path = os.path.join(uploads_dir, filename)
+                
+                # Save file to disk
+                content = await cv_file.read()
+                with open(file_path, "wb") as f:
+                    f.write(content)
+                await cv_file.seek(0)  # Reset file pointer for future reading
+                
                 logger.info(f"CV file saved: {file_path}")
+                
+                # Extract text from CV
                 cv_text = extract_text_from_cv(file_path)
+                
+                if cv_text:
+                    logger.info(f"Successfully extracted {len(cv_text)} characters from CV")
+                    
+                    # Save CV to MongoDB cvs collection
+                    db = conversations_col.database
+                    cv_collection = db.get_collection("cvs")
+                    
+                    if cv_collection is not None:
+                        # Save to MongoDB
+                        try:
+                            cv_document = {
+                                "_id": ObjectId(),
+                                "userId": user_id,
+                                "filename": filename,
+                                "originalName": cv_file.filename,
+                                "filePath": file_path,
+                                "fileSize": len(content),
+                                "contentType": cv_file.content_type or "application/octet-stream",
+                                "extractedText": cv_text,
+                                "uploadedAt": datetime.utcnow(),
+                                "lastUsed": datetime.utcnow(),
+                                "fileId": timestamp_id
+                            }
+                            
+                            result = await cv_collection.insert_one(cv_document)
+                            stored_cv_id = str(cv_document["_id"])
+                            logger.info(f"Saved CV to MongoDB with ID: {stored_cv_id}")
+                        except Exception as db_err:
+                            logger.error(f"Error saving CV to MongoDB: {db_err}")
+                            # Continue anyway, we'll use the extracted text
+                    else:
+                        logger.warning("CV collection not found in database")
+                else:
+                    logger.error("Failed to extract text from CV")
+                    return JSONResponse(
+                        status_code=400,
+                        content={"detail": "Could not extract text from CV"}
+                    )
             except Exception as e:
                 logger.error(f"Error processing CV file: {e}")
                 return JSONResponse(
@@ -508,13 +582,22 @@ async def start_interview(
                 
             # Find CV document
             try:
-                cv_query = {"$or": [
-                    {"_id": cv_id},
-                    {"_id": ObjectId(cv_id) if len(cv_id) == 24 else cv_id}
-                ]}
-                cv_query["userId"] = user_id
-                
-                cv_document = await cv_collection.find_one(cv_query)
+                # Try to find CV document using imported function if available
+                if 'find_cv_by_id' in locals():
+                    cv_document = await find_cv_by_id(db, cv_id, user_id)
+                else:
+                    # Fallback method
+                    try:
+                        object_id = ObjectId(cv_id) if len(cv_id) == 24 else cv_id
+                        cv_document = await cv_collection.find_one({
+                            "_id": object_id,
+                            "userId": user_id
+                        })
+                    except:
+                        cv_document = await cv_collection.find_one({
+                            "_id": cv_id,
+                            "userId": user_id
+                        })
                 
                 if not cv_document:
                     logger.warning(f"CV not found for ID: {cv_id}")
@@ -523,14 +606,70 @@ async def start_interview(
                         content={"detail": f"CV not found: {cv_id}"}
                     )
                     
-                # Get CV content
-                cv_text = cv_document.get("content")
-                cv_file_path = cv_document.get("filePath")
+                # Store the CV ID for later reference
+                stored_cv_id = cv_id
                 
-                # Extract text from file if needed
-                if not cv_text and cv_file_path and os.path.exists(cv_file_path):
-                    logger.info(f"Extracting text from file: {cv_file_path}")
-                    cv_text = extract_text_from_document(cv_file_path, vision_client, openai_client)
+                # Get CV text from document
+                cv_text = cv_document.get("extractedText")
+                
+                # If no extracted text, try to extract from file
+                if not cv_text or len(cv_text.strip()) < 100:
+                    logger.info(f"No valid extracted text found, attempting to extract from file")
+                    
+                    # Get potential file paths
+                    if 'get_potential_file_paths' in locals():
+                        potential_paths = get_potential_file_paths(cv_document)
+                    else:
+                        # Fallback method
+                        potential_paths = []
+                        if "filePath" in cv_document:
+                            potential_paths.append(cv_document["filePath"])
+                        if "filename" in cv_document:
+                            potential_paths.append(f"/app/uploads/{cv_document['filename']}")
+                    
+                    # Try each path
+                    for path in potential_paths:
+                        if os.path.exists(path):
+                            logger.info(f"Found file at path: {path}")
+                            try:
+                                cv_text = extract_text_from_document(path, vision_client, openai_client)
+                                if cv_text and len(cv_text.strip()) >= 100:
+                                    logger.info(f"Successfully extracted {len(cv_text)} chars from file")
+                                    
+                                    # Update the database with extracted text
+                                    try:
+                                        await cv_collection.update_one(
+                                            {"_id": cv_document["_id"]},
+                                            {"$set": {
+                                                "extractedText": cv_text,
+                                                "lastUsed": datetime.utcnow()
+                                            }}
+                                        )
+                                        logger.info(f"Updated CV document with extracted text")
+                                    except Exception as update_err:
+                                        logger.error(f"Failed to update CV document with extracted text: {update_err}")
+                                        
+                                    break
+                            except Exception as extract_err:
+                                logger.error(f"Error extracting text from file: {extract_err}")
+                    
+                    # If still no text, return error
+                    if not cv_text or len(cv_text.strip()) < 100:
+                        logger.error("Could not extract sufficient text from CV file")
+                        return JSONResponse(
+                            status_code=400,
+                            content={"detail": "Could not extract sufficient content from CV"}
+                        )
+                else:
+                    # Update last used timestamp
+                    try:
+                        await cv_collection.update_one(
+                            {"_id": cv_document["_id"]},
+                            {"$set": {"lastUsed": datetime.utcnow()}}
+                        )
+                    except Exception as update_err:
+                        logger.error(f"Failed to update CV last used timestamp: {update_err}")
+                        
             except Exception as e:
                 logger.error(f"Error retrieving CV: {e}")
                 return JSONResponse(
@@ -566,7 +705,7 @@ async def start_interview(
             "created_at": datetime.utcnow(),
             "finished": False,
             "max_questions": max_questions,
-            "cv_id": cv_id  # Include if provided
+            "cv_id": stored_cv_id  # Include CV ID reference if available
         }
 
         # 8) Save to MongoDB
@@ -587,8 +726,8 @@ async def start_interview(
         }
         
         # Include CV ID in response if provided
-        if cv_id:
-            response_data["cv_id"] = cv_id
+        if stored_cv_id:
+            response_data["cv_id"] = stored_cv_id
         
         logger.info(f"Returning response: {response_data}")
         return JSONResponse(content=response_data)
