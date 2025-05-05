@@ -303,56 +303,45 @@ def extract_text_with_openai(file_path: str, openai_client=None) -> str:
 
 def call_openai(prompt: str) -> str:
     """
-    Call OpenAI API or return fallback response.
-    Compatible with both v0.x and v1.x OpenAI APIs.
-    Uses the gpt-4.1-mini-2025-04-14 model.
+    Call OpenAI API with improved error handling and retry logic.
     """
-    logger.info(f"Calling OpenAI API with model {OPENAI_MODEL}")
-    
-    # Fallback if OpenAI is not configured
-    if (openai_client is None) and (openai is None or not openai_api_key):
-        logger.warning("OpenAI not configured, using fallback")
-        return "This is a fallback response since OpenAI is not configured. In a real scenario, this would be an AI-generated response based on the conversation context."
-    
-    try:
-        # First try with new v1.x client
-        if openai_client is not None:
-            logger.info("Using OpenAI v1.x API")
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"Calling OpenAI API with model {OPENAI_MODEL}")
             
-            # For chat models like gpt-4.1-mini-2025-04-14, we need to use the chat completion API
-            response = openai_client.chat.completions.create(
-                model=OPENAI_MODEL,
-                messages=[
-                    {"role": "system", "content": "You are a professional interviewer."},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=500,
-                temperature=0.7
-            )
-            return response.choices[0].message.content.strip()
-        
-        # Fallback to legacy v0.x API
-        elif hasattr(openai, 'ChatCompletion'):
-            logger.info("Using OpenAI v0.x legacy API")
-            response = openai.ChatCompletion.create(
-                model=OPENAI_MODEL,
-                messages=[
-                    {"role": "system", "content": "You are a professional interviewer."},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=500,
-                temperature=0.7
-            )
-            return response.choices[0].message["content"].strip()
-        
-        # If we can't determine the API version
-        else:
-            logger.error("Unsupported OpenAI API version")
-            return "Error: Unsupported OpenAI API version. Please check your installation."
+            # Update the system message to encourage JSON output
+            messages = [
+                {"role": "system", "content": "You are a helpful assistant that provides responses in valid JSON format when requested. Always ensure JSON responses are properly formatted."},
+                {"role": "user", "content": prompt}
+            ]
             
-    except Exception as e:
-        logger.error(f"OpenAI API error: {e}")
-        return f"Error generating response: {str(e)}"
+            if openai.__version__.startswith('0.'):
+                # OpenAI v0.x API
+                response = openai.ChatCompletion.create(
+                    model=OPENAI_MODEL,
+                    messages=messages,
+                    temperature=0.7,
+                    max_tokens=2000
+                )
+                return response.choices[0].message.content.strip()
+            else:
+                # OpenAI v1.x API
+                response = openai_client.chat.completions.create(
+                    model=OPENAI_MODEL,
+                    messages=messages,
+                    temperature=0.7,
+                    max_tokens=2000
+                )
+                return response.choices[0].message.content.strip()
+                
+        except Exception as e:
+            logger.error(f"OpenAI API call failed (attempt {attempt + 1}/{max_retries}): {e}")
+            if attempt == max_retries - 1:
+                raise
+            time.sleep(2 ** attempt)  # Exponential backoff
+    
+    raise Exception("Failed to get response from OpenAI after all retries")
 
 async def build_openai_prompt(
     cv_text: str,

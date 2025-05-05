@@ -19,7 +19,8 @@ export default function Header() {
   const navigationLinks = [
     { name: 'Features', href: '#features' },
     { name: 'How it Works', href: '#how-it-works' },
-    { name: 'Success Stories', href: '#success-stories' }
+    { name: 'Success Stories', href: '#success-stories' },
+    { name: 'Contact Us', href:'#'}
   ];
 
   const handleMenuClick = () => {
@@ -53,10 +54,10 @@ export default function Header() {
               </a>
             ))}
             <a
-              href="#"
+              href="/login"
               className="bg-gradient-to-r from-purple-600 to-blue-500 text-white px-6 py-2 rounded-full hover:shadow-lg transition-all"
             >
-              Get Started
+              Login
             </a>
           </nav>
 

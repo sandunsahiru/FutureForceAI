@@ -23,6 +23,10 @@ try:
     # Import the new saved CV router
     from routers.saved_cv_route import router as saved_cv_router
     logger.info("Successfully imported saved CV router")
+    
+    # Import the job description router
+    from routers.job_description import router as job_description_router
+    logger.info("Successfully imported job description router")
 except ImportError as e:
     logger.error(f"Failed to import routers: {e}")
     # List the contents of the routers directory to debug
@@ -97,6 +101,10 @@ app.include_router(cv_router, prefix="/api/user", tags=["CV"])
 # Note: We don't add a prefix here since the saved_cv_router already includes the full path
 logger.info("Registering saved CV router")
 app.include_router(saved_cv_router, tags=["SavedCV"])
+
+# Register the job description router
+logger.info("Registering job description router with prefix: /api/job-description")
+app.include_router(job_description_router, prefix="/api/job-description", tags=["JobDescription"])
 
 # Log all registered routes for debugging
 for route in app.routes:

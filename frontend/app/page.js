@@ -2,6 +2,9 @@
 import { Brain, Users, Briefcase, Search, Bot, FileSearch, MapPin, BookOpen, GitBranch, Sparkles } from 'lucide-react';
 import Header from './Header';
 import Footer from './Footer';
+import Link from 'next/link';
+import Image from 'next/image';
+
 
 export default function Home() {
   return (
@@ -12,31 +15,34 @@ export default function Home() {
       <section className="pt-32 pb-20 px-4 bg-gradient-to-br from-purple-50 via-white to-blue-50">
         <div className="max-w-7xl mx-auto grid md:grid-cols-2 gap-12 items-center">
           <div>
-          <h2 className="text-5xl md:text-6xl font-bold leading-tight mb-6">
-  <span className="bg-gradient-to-r from-purple-600 to-blue-500 bg-clip-text text-transparent">
-    Transform
-  </span>
-  <span className="text-indigo-600"> Your Career with AI</span>
-</h2>
+            <h2 className="text-5xl md:text-6xl font-bold leading-tight mb-6">
+              <span className="bg-gradient-to-r from-purple-600 to-blue-500 bg-clip-text text-transparent">
+                Transform
+              </span>
+              <span className="text-indigo-600"> Your Career with AI</span>
+            </h2>
             <p className="text-lg text-gray-700 mb-8">
               FutureForceAI is your comprehensive AI-powered career platform featuring interview preparation, 
               resume optimization, job search, career guidance, and interactive learning tools—all in one place.
             </p>
             <div className="flex gap-4">
-            <a
-  href="/register"
-  className="bg-gradient-to-r from-purple-600 to-blue-500 text-white px-8 py-3 rounded-full hover:shadow-lg transition-all"
->
-  Sign Up
-</a>
+              <Link 
+                href="/register"
+                className="bg-gradient-to-r from-purple-600 to-blue-500 text-white px-8 py-3 rounded-full hover:shadow-lg transition-all"
+              >
+                Sign Up
+              </Link>
               <button className="border border-purple-600 text-purple-600 px-8 py-3 rounded-full hover:bg-purple-50 transition-all">
                 Learn More
               </button>
             </div>
           </div>
           <div className="relative">
-            <div className="absolute inset-0 bg-gradient-to-r from-purple-200 to-blue-200 rounded-full blur-3xl opacity-30"></div>
-            <img src="/api/placeholder/600/400" alt="AI Career Platform" className="relative rounded-2xl shadow-2xl" />
+            <img 
+              src="https://i.ibb.co/27YW6ZZT/webbanner1.jpg" 
+              alt="AI Career Platform" 
+              className="w-full h-auto"
+            />
           </div>
         </div>
       </section>

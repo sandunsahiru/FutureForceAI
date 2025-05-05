@@ -1,12 +1,9 @@
 import os
 import random
 import logging
-import sys
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from typing import Dict, List, Optional, Union, Any
 from datetime import datetime
 from bson import ObjectId
-from .cv_utils import generate_timestamp_id, save_cv_to_db
 
 # Set up logging
 logger = logging.getLogger("futureforceai")
@@ -128,73 +125,41 @@ async def save_cv_to_db(
         logger.error(f"Error saving CV to MongoDB: {e}")
         return None
 
-async def find_cv_by_id(db, cv_id: str, user_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """
-    Find a CV document by ID with multiple fallback strategies.
-    """
-    collections_to_check = ["cvs", "CV", "cv"]
-    cv_document = None
+async def find_cv_by_id(db, cv_id, user_id):
+    if db is None:
+        logger.error("Database not connected")
+        return None
     
-    for collection_name in collections_to_check:
-        collection = db.get_collection(collection_name)
-        if not collection:
-            continue
-            
-        # Try with ObjectId first if possible
-        if len(cv_id) == 24:
-            try:
-                object_id = ObjectId(cv_id)
-                # With user filter if provided
-                if user_id:
-                    cv_document = await collection.find_one({
-                        "_id": object_id,
-                        "userId": user_id
-                    })
-                else:
-                    cv_document = await collection.find_one({"_id": object_id})
-                    
-                if cv_document:
-                    logger.info(f"Found CV with ObjectId in {collection_name}")
-                    return cv_document
-            except Exception as id_err:
-                logger.error(f"Error finding CV with ObjectId: {id_err}")
+    try:
+        # Get the CV collection
+        cv_collection = db.get_collection("cvs")
         
-        # Try with string ID
-        try:
-            # With user filter if provided
-            if user_id:
-                cv_document = await collection.find_one({
-                    "_id": cv_id,
-                    "userId": user_id
-                })
-            else:
-                cv_document = await collection.find_one({"_id": cv_id})
-                
-            if cv_document:
-                logger.info(f"Found CV with string ID in {collection_name}")
-                return cv_document
-        except Exception as e:
-            logger.error(f"Error finding CV with string ID: {e}")
-            
-        # Try finding by fileId field
-        try:
-            # With user filter if provided
-            if user_id:
-                cv_document = await collection.find_one({
-                    "fileId": cv_id,
-                    "userId": user_id
-                })
-            else:
-                cv_document = await collection.find_one({"fileId": cv_id})
-                
-            if cv_document:
-                logger.info(f"Found CV with fileId in {collection_name}")
-                return cv_document
-        except Exception as e:
-            logger.error(f"Error finding CV with fileId: {e}")
-    
-    logger.warning(f"CV not found for ID: {cv_id}")
-    return None
+        # IMPORTANT: Don't check 'if cv_collection:' - use 'is not None' instead
+        if cv_collection is None:
+            logger.error("CV collection not available")
+            return None
+        
+        # Convert string ID to ObjectId if needed
+        doc_id = cv_id
+        if isinstance(cv_id, str):
+            try:
+                doc_id = ObjectId(cv_id)
+            except:
+                # If not a valid ObjectId, try to find by other fields
+                query = {"fileId": cv_id, "userId": user_id}
+                return await cv_collection.find_one(query)
+        
+        # Try to find by ObjectId first
+        cv_document = await cv_collection.find_one({"_id": doc_id, "userId": user_id})
+        
+        # If not found by ObjectId, try finding by fileId
+        if cv_document is None:
+            cv_document = await cv_collection.find_one({"fileId": cv_id, "userId": user_id})
+        
+        return cv_document
+    except Exception as e:
+        logger.error(f"Error finding CV document: {e}")
+        return None
 
 async def update_cv_with_extracted_text(collection, cv_id: Union[str, ObjectId], extracted_text: str, file_path: Optional[str] = None) -> bool:
     """
