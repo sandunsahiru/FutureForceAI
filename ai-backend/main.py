@@ -27,6 +27,10 @@ try:
     # Import the job description router
     from routers.job_description import router as job_description_router
     logger.info("Successfully imported job description router")
+    
+    # Import the job search router
+    from routers.job_search import router as job_search_router, setup_job_search_routes
+    logger.info("Successfully imported job search router")
 except ImportError as e:
     logger.error(f"Failed to import routers: {e}")
     # List the contents of the routers directory to debug
@@ -106,9 +110,17 @@ app.include_router(saved_cv_router, tags=["SavedCV"])
 logger.info("Registering job description router with prefix: /api/job-description")
 app.include_router(job_description_router, prefix="/api/job-description", tags=["JobDescription"])
 
+# Register the job search router
+logger.info("Registering job search router with prefix: /api")
+app.include_router(job_search_router, prefix="/api", tags=["JobSearch"])
+
+# Set up additional job search routes
+logger.info("Setting up job search routes")
+setup_job_search_routes(app)
+
 # Log all registered routes for debugging
 for route in app.routes:
-    logger.info(f"Registered route: {route.path} [{', '.join(route.methods)}]")
+    logger.info(f"Registered route: {route.path} [{', '.join(route.methods) if hasattr(route, 'methods') else ''}]")
 
 # Add a health check endpoint
 @app.get("/")

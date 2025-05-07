@@ -100,7 +100,7 @@ export default function JobSearch() {
         // If user has CVs, automatically select the most recent one
         if (data.cvs && data.cvs.length > 0) {
           const sortedCVs = [...data.cvs].sort((a, b) => 
-            new Date(b.uploadedAt) - new Date(a.uploadedAt)
+            new Date(b.uploaded_at) - new Date(a.uploaded_at)
           );
           handleSelectCV(sortedCVs[0]);
         }
@@ -147,7 +147,51 @@ export default function JobSearch() {
         return;
       }
       
-      setCvFile(file);
+      // Upload file to server
+      uploadCV(file);
+    }
+  };
+
+  // Upload CV to server
+  const uploadCV = async (file) => {
+    try {
+      setLoading(true);
+      
+      const formData = new FormData();
+      formData.append("cv_file", file);
+      
+      const response = await fetch("/api/user/save-cv", {
+        method: "POST",
+        credentials: "include",
+        body: formData
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        
+        // Set the uploaded CV
+        setCvFile({
+          id: data.cv_id,
+          name: file.name,
+          size: file.size,
+          useSaved: true
+        });
+        
+        setSuccess("CV uploaded successfully");
+        setTimeout(() => setSuccess(null), 3000);
+        
+        // Refresh saved CVs
+        fetchSavedCVs();
+      } else {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || "Failed to upload CV");
+      }
+    } catch (err) {
+      console.error("Error uploading CV:", err);
+      setError("Error uploading CV. Please try again.");
+      setTimeout(() => setError(null), 5000);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -472,7 +516,7 @@ export default function JobSearch() {
                         <div>
                           <div className="font-medium text-gray-800">{cv.filename}</div>
                           <div className="text-sm text-gray-600">
-                            {new Date(cv.uploadedAt).toLocaleDateString()} • {Math.round(cv.size/1024)} KB
+                            {new Date(cv.uploaded_at).toLocaleDateString()} • {Math.round(cv.size/1024)} KB
                           </div>
                         </div>
                         <button
@@ -785,7 +829,7 @@ export default function JobSearch() {
                         </div>
                       )}
                       
-                      {job.requirements && (
+                      {job.requirements && job.requirements.length > 0 && (
                         <div>
                           <h5 className="font-semibold text-gray-800 mb-2">Requirements</h5>
                           <ul className="list-disc pl-5 space-y-1 text-gray-700">
@@ -796,7 +840,7 @@ export default function JobSearch() {
                         </div>
                       )}
                       
-                      {job.responsibilities && (
+                      {job.responsibilities && job.responsibilities.length > 0 && (
                         <div>
                           <h5 className="font-semibold text-gray-800 mb-2">Responsibilities</h5>
                           <ul className="list-disc pl-5 space-y-1 text-gray-700">
@@ -807,7 +851,7 @@ export default function JobSearch() {
                         </div>
                       )}
                       
-                      {job.benefits && (
+                      {job.benefits && job.benefits.length > 0 && (
                         <div>
                           <h5 className="font-semibold text-gray-800 mb-2">Benefits</h5>
                           <ul className="list-disc pl-5 space-y-1 text-gray-700">
@@ -818,7 +862,7 @@ export default function JobSearch() {
                         </div>
                       )}
                       
-                      {job.skills && (
+                      {job.skills && job.skills.length > 0 && (
                         <div>
                           <h5 className="font-semibold text-gray-800 mb-2">Required Skills</h5>
                           <div className="flex flex-wrap gap-2">
