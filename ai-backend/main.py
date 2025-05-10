@@ -31,6 +31,11 @@ try:
     # Import the job search router
     from routers.job_search import router as job_search_router, setup_job_search_routes
     logger.info("Successfully imported job search router")
+    
+    # Import the career guidance router (NEW)
+    from routers.career_guidance import router as career_guidance_router
+    logger.info("Successfully imported career guidance router")
+    
 except ImportError as e:
     logger.error(f"Failed to import routers: {e}")
     # List the contents of the routers directory to debug
@@ -113,6 +118,10 @@ app.include_router(job_description_router, prefix="/api/job-description", tags=[
 # Register the job search router
 logger.info("Registering job search router with prefix: /api")
 app.include_router(job_search_router, prefix="/api", tags=["JobSearch"])
+
+# Register the career guidance router (NEW)
+logger.info("Registering career guidance router with prefix: /api/career-guidance")
+app.include_router(career_guidance_router, prefix="/api/career-guidance", tags=["CareerGuidance"])
 
 # Set up additional job search routes
 logger.info("Setting up job search routes")

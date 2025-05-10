@@ -12,3 +12,4 @@ requests
 beautifulsoup4 
 reportlab
 2captcha-python==1.2.1
+aiohttp
