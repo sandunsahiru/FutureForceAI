@@ -711,7 +711,7 @@ export default function CareerGuidance() {
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div className="bg-white p-4 rounded-lg shadow-sm">
                       <div className="text-purple-600 font-semibold mb-1">Current Level</div>
-                      <div className="text-lg font-bold">{careerAnalysis?.currentLevel || "Not available"}</div>
+                      <div className="text-lg font-semibold">{careerAnalysis?.currentLevel || "Not available"}</div>
                     </div>
                     <div className="bg-white p-4 rounded-lg shadow-sm">
                       <div className="text-purple-600 font-semibold mb-1">Potential Growth</div>

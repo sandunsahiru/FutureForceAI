@@ -194,73 +194,201 @@ async def verify_token(token: str) -> Optional[str]:
         logger.error(f"JWT decode error: {e}")
         return None
 
-async def get_cv_text(cv_id: str, user_id: str) -> Optional[str]:
-    """Get CV text from MongoDB by ID with error handling"""
-    if db is None:
-        logger.error("MongoDB not connected")
-        return None
+async def get_cv_text(cv_id: str, user_id: str) -> tuple[Optional[str], bool]:
+    """
+    Get CV text from database with enhanced error handling and text extraction.
+    Returns a tuple of (cv_text, is_extractable)
+    """
+    logger.info(f"Getting CV text for ID: {cv_id}")
     
     try:
-        # Find the CV document
-        cv_document = await find_cv_by_id(db, cv_id, user_id)
+        # Find CV document
+        cv_collection = db.get_collection("cvs")
+        cv_document = await cv_collection.find_one({"_id": ObjectId(cv_id), "userId": user_id})
         
         if not cv_document:
-            logger.warning(f"CV not found: {cv_id}")
-            return None
-        
-        # Get CV text from document using different possible field names
-        cv_text = None
-        
-        # First check extracted text field
-        if 'extractedText' in cv_document and cv_document['extractedText']:
+            logger.warning(f"CV not found with ID: {cv_id} for user: {user_id}")
+            return None, False
+            
+        # First try to get extracted text
+        if "extractedText" in cv_document and cv_document["extractedText"] and len(cv_document["extractedText"].strip()) > 100:
             logger.info("Using 'extractedText' field from CV document")
-            cv_text = cv_document['extractedText']
             
-        # Try content field if extractedText not found
-        if not cv_text and 'content' in cv_document and cv_document['content']:
+            # Check if the extracted text contains meaningful content
+            cv_text = cv_document["extractedText"]
+            career_keywords = ["experience", "education", "skills", "work", "project", "job", "employment", "qualification"]
+            contains_career_content = any(keyword in cv_text.lower() for keyword in career_keywords)
+            
+            if contains_career_content:
+                return cv_text, True
+            else:
+                logger.warning("CV text found but doesn't contain meaningful career content")
+                # Try to improve the extracted text using OpenAI
+                try:
+                    prompt = (
+                        "The following text was extracted from a CV/resume but may not contain proper career information. "
+                        "If this contains any professional details like education, work experience, skills, or projects, "
+                        "please format it properly. If it appears to be metadata or non-career content, indicate that this "
+                        "doesn't contain meaningful career information.\n\n"
+                        f"{cv_text[:2000]}"  # Limit to 2000 chars to avoid token limits
+                    )
+                    
+                    enhanced_text = call_openai(prompt)
+                    
+                    if "doesn't contain" in enhanced_text.lower() or "does not contain" in enhanced_text.lower():
+                        # OpenAI confirms it's not meaningful CV content
+                        return cv_text, False
+                    else:
+                        # OpenAI was able to extract/enhance some career information
+                        # Update the database with the enhanced text
+                        await cv_collection.update_one(
+                            {"_id": cv_document["_id"]},
+                            {"$set": {"extractedText": enhanced_text, "lastUsed": datetime.utcnow()}}
+                        )
+                        logger.info("Enhanced CV text using OpenAI")
+                        return enhanced_text, True
+                except Exception as openai_err:
+                    logger.error(f"Error enhancing CV text with OpenAI: {openai_err}")
+                    return cv_text, False
+            
+        # Try content field if extractedText not found or too short
+        if "content" in cv_document and cv_document["content"] and len(cv_document["content"].strip()) > 100:
             logger.info("Using 'content' field from CV document")
-            cv_text = cv_document['content']
-        
-        # If still no text, try extracting from file
-        if not cv_text or len(cv_text.strip()) < 100:
-            # Get potential file paths
-            potential_paths = get_potential_file_paths(cv_document)
-            logger.info(f"Trying potential file paths: {potential_paths}")
+            return cv_document["content"], True
             
-            # Try each path
-            for path in potential_paths:
-                if os.path.exists(path):
-                    logger.info(f"Found file at path: {path}")
-                    try:
-                        cv_text = extract_text_from_document(path, vision_client, openai_client)
-                        if cv_text and len(cv_text.strip()) >= 100:
-                            logger.info(f"Successfully extracted {len(cv_text)} chars from file")
-                            
-                            # Update database with extracted text
-                            cv_collection = db.get_collection("cvs")
-                            await cv_collection.update_one(
-                                {"_id": cv_document["_id"]},
-                                {"$set": {
-                                    "extractedText": cv_text,
-                                    "lastUsed": datetime.utcnow()
-                                }}
-                            )
-                            logger.info(f"Updated CV document with extracted text")
-                            break
-                    except Exception as e:
-                        logger.error(f"Error extracting text from file: {e}")
-                        # Continue trying other paths
-        
-        # If we still don't have usable CV text, return None
-        if not cv_text or len(cv_text.strip()) < 100:
-            logger.error(f"Could not extract sufficient content from CV")
-            return None
+        # If still no usable text, try to extract from file
+        if "filePath" in cv_document and cv_document["filePath"]:
+            file_path = cv_document["filePath"]
+            logger.info(f"Attempting to extract text from file: {file_path}")
             
-        return cv_text
-    
+            if os.path.exists(file_path):
+                try:
+                    # Extract text using the utility function
+                    cv_text = extract_text_from_document(file_path, vision_client, openai_client)
+                    
+                    if cv_text and len(cv_text.strip()) > 100:
+                        # Check if the extracted text contains meaningful career content
+                        career_keywords = ["experience", "education", "skills", "work", "project", "job", "employment", "qualification"]
+                        contains_career_content = any(keyword in cv_text.lower() for keyword in career_keywords)
+                        
+                        # Update the database with the extracted text
+                        await cv_collection.update_one(
+                            {"_id": cv_document["_id"]},
+                            {"$set": {"extractedText": cv_text, "lastUsed": datetime.utcnow()}}
+                        )
+                        logger.info(f"Successfully extracted and saved text from file: {len(cv_text)} chars")
+                        
+                        if not contains_career_content:
+                            # Try to improve the extracted text using OpenAI
+                            try:
+                                prompt = (
+                                    "The following text was extracted from a CV/resume but may not contain proper career information. "
+                                    "If this contains any professional details like education, work experience, skills, or projects, "
+                                    "please format it properly. If it appears to be metadata or non-career content, indicate that this "
+                                    "doesn't contain meaningful career information.\n\n"
+                                    f"{cv_text[:2000]}"  # Limit to 2000 chars to avoid token limits
+                                )
+                                
+                                enhanced_text = call_openai(prompt)
+                                
+                                if "doesn't contain" in enhanced_text.lower() or "does not contain" in enhanced_text.lower():
+                                    # OpenAI confirms it's not meaningful CV content
+                                    return cv_text, False
+                                else:
+                                    # OpenAI was able to extract/enhance some career information
+                                    # Update the database with the enhanced text
+                                    await cv_collection.update_one(
+                                        {"_id": cv_document["_id"]},
+                                        {"$set": {"extractedText": enhanced_text, "lastUsed": datetime.utcnow()}}
+                                    )
+                                    logger.info("Enhanced CV text using OpenAI")
+                                    return enhanced_text, True
+                            except Exception as openai_err:
+                                logger.error(f"Error enhancing CV text with OpenAI: {openai_err}")
+                                return cv_text, contains_career_content
+                        
+                        return cv_text, contains_career_content
+                    else:
+                        logger.warning(f"Extracted text too short or empty from file: {file_path}")
+                        return f"The text extracted from your CV is too limited for analysis. Please upload a text-based document with career information.", False
+                except Exception as e:
+                    logger.error(f"Error extracting text from file: {e}")
+                    return f"Error extracting text from CV file: {str(e)}", False
+        
+        # As a final fallback, check for any text fields that might contain CV data
+        for field in ["rawText", "text", "data", "parsedContent"]:
+            if field in cv_document and cv_document[field] and len(str(cv_document[field]).strip()) > 100:
+                logger.info(f"Using '{field}' field from CV document")
+                text = str(cv_document[field])
+                career_keywords = ["experience", "education", "skills", "work", "project", "job", "employment", "qualification"]
+                contains_career_content = any(keyword in text.lower() for keyword in career_keywords)
+                return text, contains_career_content
+        
+        # If we have a PDF or image-based file but couldn't extract meaningful text, try directly with OpenAI Vision API
+        if "filePath" in cv_document and cv_document["filePath"] and (
+            cv_document.get("contentType", "").lower().startswith("application/pdf") or
+            cv_document.get("contentType", "").lower().startswith("image/")
+        ):
+            try:
+                import base64
+                
+                file_path = cv_document["filePath"]
+                logger.info(f"Attempting direct OpenAI Vision analysis for: {file_path}")
+                
+                if os.path.exists(file_path) and openai_client:
+                    # Read the file
+                    with open(file_path, "rb") as file:
+                        file_data = file.read()
+                    
+                    # Create a base64 encoded version of the file
+                    file_b64 = base64.b64encode(file_data).decode('utf-8')
+                    
+                    # Determine content type
+                    content_type = cv_document.get("contentType", "application/pdf")
+                    
+                    # Call OpenAI Vision API
+                    response = openai_client.chat.completions.create(
+                        model="gpt-4-vision-preview",
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": "Please extract all the career information from this CV/resume. Include education, work experience, skills, projects, and any other professional details. Format it as a clean CV. If this isn't a CV or doesn't contain career information, please indicate that."},
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": f"data:{content_type};base64,{file_b64}"
+                                        }
+                                    }
+                                ]
+                            }
+                        ],
+                        max_tokens=4096
+                    )
+                    
+                    vision_text = response.choices[0].message.content
+                    
+                    if "isn't a CV" in vision_text.lower() or "doesn't contain" in vision_text.lower() or "does not contain" in vision_text.lower():
+                        # OpenAI confirms it's not a CV
+                        logger.warning("OpenAI Vision API confirms this isn't a CV or doesn't contain career information")
+                        return "The document you uploaded doesn't appear to be a CV or doesn't contain career information. Please upload a document with your professional details.", False
+                    
+                    # Update the database with the extracted text
+                    await cv_collection.update_one(
+                        {"_id": cv_document["_id"]},
+                        {"$set": {"extractedText": vision_text, "lastUsed": datetime.utcnow()}}
+                    )
+                    logger.info(f"Successfully extracted CV text using OpenAI Vision API: {len(vision_text)} chars")
+                    return vision_text, True
+            except Exception as vision_err:
+                logger.error(f"Error using OpenAI Vision API for CV: {vision_err}")
+                
+        logger.error(f"No usable CV text found in document: {cv_id}")
+        return "No readable text could be extracted from your CV. Please upload a text-based PDF or Word document with your professional information.", False
+        
     except Exception as e:
         logger.error(f"Error retrieving CV text: {e}")
-        return None
+        return f"Error processing CV: {str(e)}", False
 
 # ------------------------------------------------------------------
 # API Routes
@@ -413,84 +541,88 @@ async def analyze_career_path(
             content={"detail": "Invalid authentication token"}
         )
     
-    # Get CV text
-    cv_text = await get_cv_text(data.cv_id, user_id)
-    if not cv_text:
-        return JSONResponse(
-            status_code=404,
-            content={"detail": "Could not retrieve or extract CV content"}
-        )
+    # Get CV text - might be None or limited text if extraction failed
+    cv_text_result = await get_cv_text(data.cv_id, user_id)
+    cv_text = cv_text_result[0]  # Extract text from tuple
+    cv_extractable = cv_text_result[1]  # Extract extractable flag from tuple
     
     try:
         # Process career goals
         career_goals = data.career_goals.dict() if data.career_goals else {}
         
+        # Check if CV text is sufficient for analysis - this additional check is redundant but keeping for safety
+        if cv_text and not cv_extractable:
+            cv_extractable = len(cv_text.strip()) >= 100 and any(keyword in cv_text.lower() for keyword in 
+                ["experience", "education", "skills", "work", "project", "job", "employment", "qualification"])
+        
         # Analyze CV and generate career guidance with proper error handling
         try:
-            skills_analysis = await analyze_cv_skills(cv_text, data.career_interests, career_goals)
+            # If CV is not extractable, create a fallback analysis
+            if not cv_extractable:
+                logger.warning("CV text is insufficient for detailed analysis")
+                skills_analysis = {
+                    "summary": f"The provided CV content is not extractable as it appears to be an image-based document or doesn't contain readable text related to your qualifications or experience. Therefore, a detailed analysis in relation to your career interests in {', '.join(data.career_interests)} cannot be conducted. Please upload a text-based CV format (such as a Word document or text-based PDF) that contains your professional information.",
+                    "currentLevel": "Unknown due to lack of readable CV content",
+                    "growthPotential": "Undeterminable without detailed information",
+                    "marketDemand": f"Roles in {', '.join(data.career_interests)} generally show moderate to high demand in the job market",
+                    "skills": [],
+                    "strengths": [],
+                    "improvements": [
+                        {"name": "Provide extractable CV", "description": "Upload a CV in a format that allows text extraction for better analysis (Word document or text-based PDF)"},
+                        {"name": "Ensure career content", "description": "Make sure your CV contains details about your education, work experience, skills, and projects"}
+                    ],
+                    "future_skills": [
+                        {"name": "Core skills for " + data.career_interests[0] if data.career_interests else "your field", 
+                         "reason": "Essential foundation for career progression", 
+                         "marketDemand": "High demand across the industry"}
+                    ]
+                }
+            else:
+                # Normal analysis with extractable CV
+                skills_analysis = await analyze_cv_skills(cv_text, data.career_interests, career_goals)
+                
             if not skills_analysis:
                 logger.error("analyze_cv_skills returned None or empty result")
-                return JSONResponse(
-                    status_code=500,
-                    content={"detail": "Failed to analyze CV skills. Please try again."}
-                )
+                skills_analysis = {
+                    "summary": f"Based on your stated career interests in {', '.join(data.career_interests)}, we've prepared a general analysis. For a more detailed assessment, try uploading a different CV format.",
+                    "currentLevel": "Professional",
+                    "growthPotential": "Good",
+                    "marketDemand": "Moderate to high",
+                    "skills": [],
+                    "strengths": [],
+                    "improvements": [],
+                    "future_skills": []
+                }
             logger.info(f"Skills analysis completed successfully. Keys: {list(skills_analysis.keys())}")
         except Exception as e:
             logger.error(f"Error in analyze_cv_skills: {e}")
-            return JSONResponse(
-                status_code=500,
-                content={"detail": f"Error analyzing CV skills: {str(e)}"}
-            )
+            skills_analysis = {
+                "summary": f"Based on your stated career interests in {', '.join(data.career_interests)}, we've prepared a general analysis. For a more detailed assessment, try uploading a different CV format.",
+                "currentLevel": "Professional",
+                "growthPotential": "Good",
+                "marketDemand": "Moderate to high",
+                "skills": [],
+                "strengths": [],
+                "improvements": [],
+                "future_skills": []
+            }
         
         try:
-            career_paths = await generate_career_paths(cv_text, data.career_interests, career_goals, skills_analysis)
+            career_paths = await generate_career_paths(cv_text if cv_extractable else "", data.career_interests, career_goals, skills_analysis)
             if not career_paths:
                 logger.warning("No career paths generated, using default paths")
-                career_paths = [
-                    {
-                        "title": data.career_interests[0] if data.career_interests else "Professional",
-                        "description": "A career aligned with your interests and skills",
-                        "fitScore": 80,
-                        "reasons": ["Based on your career interests", "Matches your current skills"],
-                        "challenges": ["May require additional training or certification"],
-                        "progression": [
-                            {"role": "Entry Level", "years": "1-2 years"},
-                            {"role": "Mid-Level", "years": "2-4 years"},
-                            {"role": "Senior Level", "years": "4+ years"}
-                        ],
-                        "salary": "Competitive based on experience and location",
-                        "growth": "Varies by industry and region",
-                        "timeToTransition": "Dependent on current experience"
-                    }
-                ]
-            logger.info(f"Career paths generation completed successfully. Generated {len(career_paths)} paths.")
+                career_paths = []
+            logger.info(f"Career paths generated: {len(career_paths)}")
         except Exception as e:
             logger.error(f"Error in generate_career_paths: {e}")
-            # Create a default career path based on the career interests
-            career_paths = [
-                {
-                    "title": data.career_interests[0] if data.career_interests else "Professional",
-                    "description": "A career aligned with your interests and skills",
-                    "fitScore": 80,
-                    "reasons": ["Based on your career interests", "Matches your current skills"],
-                    "challenges": ["May require additional training or certification"],
-                    "progression": [
-                        {"role": "Entry Level", "years": "1-2 years"},
-                        {"role": "Mid-Level", "years": "2-4 years"},
-                        {"role": "Senior Level", "years": "4+ years"}
-                    ],
-                    "salary": "Competitive based on experience and location",
-                    "growth": "Varies by industry and region",
-                    "timeToTransition": "Dependent on current experience"
-                }
-            ]
+            career_paths = []
         
         try:
-            skill_gaps = await identify_skill_gaps(cv_text, data.career_interests, skills_analysis)
+            skill_gaps = await identify_skill_gaps(cv_text if cv_extractable else "", data.career_interests, skills_analysis)
             if not skill_gaps:
                 logger.warning("No skill gaps identified")
                 skill_gaps = []
-            logger.info(f"Skill gaps identification completed. Found {len(skill_gaps)} skill gaps.")
+            logger.info(f"Skill gaps identified: {len(skill_gaps)}")
         except Exception as e:
             logger.error(f"Error in identify_skill_gaps: {e}")
             skill_gaps = []
@@ -500,21 +632,6 @@ async def analyze_career_path(
             if not learning_resources:
                 logger.warning("No learning resources recommended")
                 learning_resources = {"paths": [], "courses": [], "certifications": []}
-            
-            # Check the structure of learning resources
-            if not isinstance(learning_resources, dict):
-                logger.error(f"learning_resources has invalid type: {type(learning_resources)}")
-                learning_resources = {"paths": [], "courses": [], "certifications": []}
-            elif not all(k in learning_resources for k in ["paths", "courses", "certifications"]):
-                logger.error(f"learning_resources is missing required keys. Keys: {list(learning_resources.keys())}")
-                # Fix the structure if needed
-                if "paths" not in learning_resources:
-                    learning_resources["paths"] = []
-                if "courses" not in learning_resources:
-                    learning_resources["courses"] = []
-                if "certifications" not in learning_resources:
-                    learning_resources["certifications"] = []
-            
             logger.info(f"Learning resources: {len(learning_resources.get('paths', []))} paths, {len(learning_resources.get('courses', []))} courses, {len(learning_resources.get('certifications', []))} certifications")
         except Exception as e:
             logger.error(f"Error in recommend_learning_resources: {e}")
@@ -528,61 +645,9 @@ async def analyze_career_path(
             logger.info(f"Action plan created with {len(action_plan)} steps")
         except Exception as e:
             logger.error(f"Error in create_action_plan: {e}")
-            action_plan = [
-                {
-                    "title": "Develop Key Skills",
-                    "description": "Focus on learning and practicing essential skills for your target career",
-                    "timeline": "3-6 months"
-                },
-                {
-                    "title": "Build Portfolio",
-                    "description": "Create projects showcasing your skills and expertise",
-                    "timeline": "2-4 months"
-                },
-                {
-                    "title": "Job Search",
-                    "description": "Apply for relevant positions in your desired field",
-                    "timeline": "Ongoing"
-                }
-            ]
+            action_plan = []
         
-        # Create comprehensive analysis
-        analysis = {
-            "summary": skills_analysis.get("summary", "Based on your CV and career interests, we've analyzed potential career paths for you."),
-            "currentLevel": skills_analysis.get("currentLevel", "Professional"),
-            "growthPotential": skills_analysis.get("growthPotential", "Good"),
-            "marketDemand": skills_analysis.get("marketDemand", "Varies by location"),
-            "strengths": [
-                {"title": s.get("name", "Skill") if isinstance(s, dict) else str(s), 
-                 "description": s.get("description", "A relevant skill for your career path") if isinstance(s, dict) else "Important skill"} 
-                for s in skills_analysis.get("strengths", []) if s
-            ],
-            "improvements": [
-                {"title": i.get("name", "Area") if isinstance(i, dict) else str(i), 
-                 "description": i.get("description", "An area for potential improvement") if isinstance(i, dict) else "Area to improve"}
-                for i in skills_analysis.get("improvements", []) if i
-            ],
-            "currentSkills": [
-                {"name": s.get("name", "Skill") if isinstance(s, dict) else str(s), 
-                 "level": s.get("level", "Intermediate") if isinstance(s, dict) else "Intermediate"}
-                for s in skills_analysis.get("skills", []) if s
-            ],
-            "futureSkills": [
-                {"name": s.get("name", "Skill") if isinstance(s, dict) else str(s), 
-                 "reason": s.get("reason", "Important for career advancement") if isinstance(s, dict) else "Important for career growth", 
-                 "marketDemand": s.get("marketDemand", "Growing") if isinstance(s, dict) else "In demand"}
-                for s in skills_analysis.get("future_skills", []) if s
-            ],
-            "actionPlan": action_plan
-        }
-        
-        # Validate the final data structure to ensure no None values
-        analysis = remove_none_values(analysis)
-        career_paths = remove_none_values(career_paths)
-        skill_gaps = remove_none_values(skill_gaps)
-        learning_resources = remove_none_values(learning_resources)
-        
-        # Save analysis results to database
+        # Save analysis to database
         if career_analyses_col is not None:
             try:
                 analysis_record = {
@@ -590,23 +655,60 @@ async def analyze_career_path(
                     "cv_id": data.cv_id,
                     "career_interests": data.career_interests,
                     "career_goals": career_goals,
-                    "analysis_summary": analysis["summary"],
-                    "created_at": datetime.utcnow()
+                    "analysis_summary": skills_analysis.get("summary", "Analysis completed"),
+                    "created_at": datetime.utcnow(),
+                    "cv_extractable": cv_extractable
                 }
                 
                 await career_analyses_col.insert_one(analysis_record)
                 logger.info(f"Saved career analysis to database for user: {user_id}")
             except Exception as db_err:
                 logger.error(f"Error saving analysis to database: {db_err}")
-                # Continue even if DB save fails
         
         # Return comprehensive career guidance
         result = {
-            "analysis": analysis,
+            "analysis": {
+                "summary": skills_analysis.get("summary", "Based on your CV and career interests, we've analyzed potential career paths for you."),
+                "currentLevel": skills_analysis.get("currentLevel", "Professional"),
+                "growthPotential": skills_analysis.get("growthPotential", "Good"),
+                "marketDemand": skills_analysis.get("marketDemand", "Varies by location"),
+                "strengths": [
+                    {"title": s.get("name", "Skill") if isinstance(s, dict) else str(s), 
+                     "description": s.get("description", "A relevant skill for your career path") if isinstance(s, dict) else "Important skill"} 
+                    for s in skills_analysis.get("strengths", []) if s
+                ],
+                "improvements": [
+                    {"title": i.get("name", "Area") if isinstance(i, dict) else str(i), 
+                     "description": i.get("description", "An area for potential improvement") if isinstance(i, dict) else "Area to improve"}
+                    for i in skills_analysis.get("improvements", []) if i
+                ],
+                "currentSkills": [
+                    {"name": s.get("name", "Skill") if isinstance(s, dict) else str(s), 
+                     "level": s.get("level", "Intermediate") if isinstance(s, dict) else "Intermediate"}
+                    for s in skills_analysis.get("skills", []) if s
+                ],
+                "futureSkills": [
+                    {"name": s.get("name", "Skill") if isinstance(s, dict) else str(s), 
+                     "reason": s.get("reason", "Important for career advancement") if isinstance(s, dict) else "Important for career growth", 
+                     "marketDemand": s.get("marketDemand", "Growing") if isinstance(s, dict) else "In demand"}
+                    for s in skills_analysis.get("future_skills", []) if s
+                ],
+                "actionPlan": action_plan
+            },
             "career_paths": career_paths,
             "skill_gaps": skill_gaps,
             "learning_resources": learning_resources
         }
+        
+        # If CV wasn't extractable but we don't have improvements yet, add one about providing an extractable CV
+        if not cv_extractable and not result["analysis"]["improvements"]:
+            result["analysis"]["improvements"] = [
+                {"title": "Provide extractable CV", 
+                 "description": "Upload a CV in a format that allows text extraction for better analysis"}
+            ]
+        
+        # Validate the final data structure to ensure no None values
+        result = remove_none_values(result)
         
         logger.info(f"Returning career analysis result with {len(result)} top-level keys")
         return result
@@ -617,6 +719,137 @@ async def analyze_career_path(
             status_code=500,
             content={"detail": f"Error analyzing career path: {str(e)}"}
         )
+
+
+def extract_text_from_document(file_path: str, vision_client=None, openai_client=None) -> str:
+    """
+    Extract text from a document using multiple methods for better extraction.
+    """
+    extracted_text = ""
+    
+    # Method 1: Try PyPDF2
+    try:
+        import PyPDF2
+        with open(file_path, "rb") as file:
+            reader = PyPDF2.PdfReader(file)
+            pdf_text = ""
+            for page_num in range(len(reader.pages)):
+                page_text = reader.pages[page_num].extract_text() or ""
+                pdf_text += page_text
+            
+            if pdf_text and len(pdf_text.strip()) >= 100:
+                return pdf_text
+            
+            # If we didn't get good text, store what we have
+            extracted_text = pdf_text
+    except Exception as e:
+        logging.error(f"PyPDF2 extraction error: {e}")
+    
+    # Method 2: Try pdfplumber
+    try:
+        import pdfplumber
+        with pdfplumber.open(file_path) as pdf:
+            plumber_text = ""
+            for page in pdf.pages:
+                page_text = page.extract_text() or ""
+                plumber_text += page_text
+            
+            if plumber_text and len(plumber_text.strip()) >= 100:
+                return plumber_text
+            
+            # If better than what we have, update
+            if len(plumber_text) > len(extracted_text):
+                extracted_text = plumber_text
+    except Exception as e:
+        logging.error(f"pdfplumber extraction error: {e}")
+    
+    # Method 3: Try pytesseract for OCR if it's installed
+    try:
+        from PIL import Image
+        import pytesseract
+        import pdf2image
+        
+        ocr_text = ""
+        # Convert PDF to images
+        images = pdf2image.convert_from_path(file_path)
+        
+        # Process each image with OCR
+        for image in images:
+            page_text = pytesseract.image_to_string(image)
+            ocr_text += page_text
+        
+        if ocr_text and len(ocr_text.strip()) >= 100:
+            return ocr_text
+        
+        # If better than what we have, update
+        if len(ocr_text) > len(extracted_text):
+            extracted_text = ocr_text
+    except Exception as e:
+        logging.error(f"OCR extraction error: {e}")
+    
+    # Method 4: Use Google Vision API if available
+    if vision_client:
+        try:
+            # Open the file and convert to bytes
+            with open(file_path, "rb") as file:
+                content = file.read()
+            
+            # Create an image object
+            image = vision_client.types.Image(content=content)
+            
+            # Perform text detection
+            response = vision_client.text_detection(image=image)
+            
+            # Extract text from response
+            vision_text = response.text_annotations[0].description if response.text_annotations else ""
+            
+            if vision_text and len(vision_text.strip()) >= 100:
+                return vision_text
+            
+            # If better than what we have, update
+            if len(vision_text) > len(extracted_text):
+                extracted_text = vision_text
+        except Exception as e:
+            logging.error(f"Vision API extraction error: {e}")
+    
+    # Method 5: Use OpenAI if available (as a last resort due to cost)
+    if openai_client and len(extracted_text.strip()) < 100:
+        try:
+            # Prepare the file for OpenAI
+            with open(file_path, "rb") as file:
+                # Create a form to send to OpenAI
+                response = openai_client.chat.completions.create(
+                    model="gpt-4-vision-preview",
+                    messages=[
+                        {
+                            "role": "user", 
+                            "content": [
+                                {"type": "text", "text": "Please extract all the text from this document. Return only the extracted text, no comments or descriptions."},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:application/pdf;base64,{base64.b64encode(file.read()).decode('utf-8')}",
+                                    },
+                                },
+                            ],
+                        }
+                    ],
+                    max_tokens=4096,
+                )
+                
+                openai_text = response.choices[0].message.content
+                
+                if openai_text and len(openai_text.strip()) >= 100:
+                    return openai_text
+                
+                # If better than what we have, update
+                if len(openai_text) > len(extracted_text):
+                    extracted_text = openai_text
+        except Exception as e:
+            logging.error(f"OpenAI extraction error: {e}")
+    
+    # Return whatever text we managed to extract, even if it's not great
+    return extracted_text
 
 def remove_none_values(data):
     """Recursively remove None values from dictionaries and lists"""
