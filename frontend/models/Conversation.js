@@ -1,8 +1,8 @@
-// models/Conversation.js
+
 import mongoose from 'mongoose';
 
 const ChatMessageSchema = new mongoose.Schema({
-  sender: { type: String, required: true }, // "user" or "ai"
+  sender: { type: String, required: true },
   text: { type: String, required: true }
 });
 
@@ -16,5 +16,4 @@ const ConversationSchema = new mongoose.Schema({
   finished: { type: Boolean, default: false }
 });
 
-// Use an existing model if it exists (helps during hot-reload)
 export default mongoose.models.Conversation || mongoose.model('Conversation', ConversationSchema);

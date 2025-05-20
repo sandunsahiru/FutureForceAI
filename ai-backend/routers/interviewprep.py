@@ -2,37 +2,30 @@ import os
 import uuid
 import logging
 import random
+import motor.motor_asyncio
+import jwt
+import base64
 from typing import List, Dict, Any, Optional
 from datetime import datetime
-
 from fastapi import APIRouter, File, UploadFile, Form, HTTPException, status, Request, BackgroundTasks
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-import jwt
-import base64
 from bson import ObjectId
-
-# Import our improved PDF extraction module
-# Save the module as pdf_extraction.py in the same directory
 from .pdf_extraction import extract_text_from_document
+from dotenv import load_dotenv
 
-# Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 SECRET_KEY = "NE60hAlMyF6wVlOt5+VDKpaU/I6FJ4Oa5df1gpG/MTg="
 
-# MongoDB (async) via Motor
-import motor.motor_asyncio
 
-# Google Cloud Vision
 try:
     from google.cloud import vision
 except ImportError:
     logger.warning("Google Cloud Vision library not installed")
     vision = None
 
-# OpenAI (or Gemini)
 try:
     import openai
     from openai import OpenAI
@@ -41,35 +34,24 @@ except ImportError:
     openai = None
     OpenAI = None
 
-# For environment variables
-from dotenv import load_dotenv
 
-# ------------------------------------------------------------------
-# Load environment variables from .env
-# ------------------------------------------------------------------
 load_dotenv()
 
-# ------------------------------------------------------------------
-# Configure environment variables
-# ------------------------------------------------------------------
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://host.docker.internal:27017")
 logger.info(f"Using MongoDB URI: {MONGODB_URI}")
 
-# Define the OpenAI model to use
 OPENAI_MODEL = "gpt-4.1-mini-2025-04-14"
 logger.info(f"Using OpenAI model: {OPENAI_MODEL}")
 
-# Configure the number of interview questions to ask before providing final feedback
+
 MAX_INTERVIEW_QUESTIONS = int(os.getenv("MAX_INTERVIEW_QUESTIONS", "5"))
 logger.info(f"Maximum interview questions set to: {MAX_INTERVIEW_QUESTIONS}")
 
-# Initialize OpenAI client (for v1.x)
 openai_client = None
 openai_api_key = os.getenv("OPENAI_API_KEY")
 if openai is not None:
     if openai_api_key:
         try:
-            # Check for v1.x API
             if hasattr(openai, 'OpenAI'):
                 openai_client = OpenAI(api_key=openai_api_key)
                 logger.info("OpenAI v1.x client initialized")
@@ -81,14 +63,12 @@ if openai is not None:
     else:
         logger.warning("OpenAI API key not set")
 
-# For Google Cloud Vision:
+
 gcp_credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
 if not gcp_credentials_path:
     logger.warning("GOOGLE_APPLICATION_CREDENTIALS not set")
 
-# ------------------------------------------------------------------
 # Set up MongoDB and Google Vision clients
-# ------------------------------------------------------------------
 try:
     client = motor.motor_asyncio.AsyncIOMotorClient(MONGODB_URI)
     db = client["futureforceai"]
@@ -102,7 +82,6 @@ except Exception as e:
     conversations_col = None
     users_col = None
 
-# Initialize Vision client if credentials are available
 vision_client = None
 try:
     if vision is not None and gcp_credentials_path:
@@ -111,18 +90,14 @@ try:
 except Exception as e:
     logger.warning(f"Could not initialize Vision client: {e}")
 
-# ------------------------------------------------------------------
-# Create a FastAPI APIRouter without a prefix
-# ------------------------------------------------------------------
+
 router = APIRouter()
 logger.info("API Router created with no prefix")
 
-# ------------------------------------------------------------------
-# Pydantic Models
-# ------------------------------------------------------------------
 
+# Pydantic Models
 class ChatMessage(BaseModel):
-    sender: str  # "user" or "ai"
+    sender: str 
     text: str
 
 class ChatResponse(BaseModel):
@@ -143,10 +118,8 @@ class ConversationModel(BaseModel):
     finished: bool = False
     max_questions: int = Field(default=MAX_INTERVIEW_QUESTIONS)
 
-# ------------------------------------------------------------------
-# Helper Functions
-# ------------------------------------------------------------------
 
+# Helper Functions
 async def save_cv_to_disk(cv_file: UploadFile) -> str:
     """
     Save the uploaded CV to the local 'uploads' folder.
@@ -177,31 +150,23 @@ def extract_text_from_cv(file_path: str) -> str:
     logger.info(f"Extracting text from CV: {file_path}")
     
     try:
-        # Use our improved extraction function that handles various file types
-        # Pass both vision_client and openai_client to enable all extraction methods
         extracted_text = extract_text_from_document(file_path, vision_client, openai_client)
-        
-        # Log the extraction result
         if extracted_text:
             logger.info(f"Successfully extracted {len(extracted_text)} characters from CV")
         else:
             logger.warning("No text extracted from CV")
             extracted_text = f"Failed to extract text from CV file: {os.path.basename(file_path)}"
         
-        # If extraction returned very little text, try the pure OpenAI method as a last resort
         if len(extracted_text.strip()) < 100 and openai_client is not None:
             logger.warning(f"Extraction produced limited text ({len(extracted_text.strip())} characters), trying direct OpenAI Vision method")
             try:
-                # Get file extension and determine content type
                 file_ext = os.path.splitext(file_path)[1].lower()
                 content_type = "application/pdf" if file_ext == '.pdf' else "image/jpeg" if file_ext in ['.jpg', '.jpeg'] else "image/png"
-                
-                # Read file and encode to base64
+
                 with open(file_path, "rb") as f:
                     file_content = f.read()
                 file_b64 = base64.b64encode(file_content).decode('utf-8')
-                
-                # Call OpenAI Vision API
+
                 response = openai_client.chat.completions.create(
                     model="gpt-4.1-mini",
                     messages=[
@@ -234,25 +199,23 @@ def extract_text_with_openai(file_path: str, openai_client=None) -> str:
     
     try:
         logger.info(f"Extracting text with OpenAI Vision API: {file_path}")
-        
-        # Determine file type
         file_ext = os.path.splitext(file_path)[1].lower()
         
-        # For PDFs, we need to convert them to images first
+        #  convert pdf to images
         if file_ext == '.pdf':
             logger.info("Converting PDF to image for OpenAI Vision processing")
             
-            # Try using pdf2image if available
+            # Try using pdf2image
             if PDF2IMAGE_AVAILABLE:
                 try:
-                    # Convert only the first page for initial extraction
+               
                     with tempfile.TemporaryDirectory() as temp_dir:
                         images = convert_from_path(file_path, dpi=300, first_page=1, last_page=1, output_folder=temp_dir)
                         if images:
                             temp_img_path = os.path.join(temp_dir, "page_1.png")
                             images[0].save(temp_img_path, "PNG")
                             
-                            # Process the first page image
+                      
                             with open(temp_img_path, "rb") as f:
                                 file_content = f.read()
                             file_b64 = base64.b64encode(file_content).decode('utf-8')
@@ -267,22 +230,20 @@ def extract_text_with_openai(file_path: str, openai_client=None) -> str:
                 logger.error("pdf2image not available, cannot convert PDF for OpenAI Vision")
                 return "Cannot process PDF without pdf2image library"
         else:
-            # For image files, process directly
             with open(file_path, "rb") as f:
                 file_content = f.read()
             file_b64 = base64.b64encode(file_content).decode('utf-8')
             
-            # Set content type based on file extension
             if file_ext in ['.jpg', '.jpeg']:
                 content_type = "image/jpeg"
             elif file_ext in ['.png']:
                 content_type = "image/png"
             else:
-                content_type = "image/jpeg"  # Default to jpeg
+                content_type = "image/jpeg"  
         
         # Call OpenAI vision model
         response = openai_client.chat.completions.create(
-            model="gpt-4.1-vision-preview",  # Use vision-capable model
+            model="gpt-4.1-vision-preview",  
             messages=[
                 {"role": "system", "content": "You are a helpful assistant that extracts text content from resume/CV documents."},
                 {"role": "user", "content": [
@@ -310,14 +271,13 @@ def call_openai(prompt: str) -> str:
         try:
             logger.info(f"Calling OpenAI API with model {OPENAI_MODEL}")
             
-            # Update the system message to encourage JSON output
             messages = [
                 {"role": "system", "content": "You are a helpful assistant that provides responses in valid JSON format when requested. Always ensure JSON responses are properly formatted."},
                 {"role": "user", "content": prompt}
             ]
             
             if openai.__version__.startswith('0.'):
-                # OpenAI v0.x API
+               
                 response = openai.ChatCompletion.create(
                     model=OPENAI_MODEL,
                     messages=messages,
@@ -326,7 +286,7 @@ def call_openai(prompt: str) -> str:
                 )
                 return response.choices[0].message.content.strip()
             else:
-                # OpenAI v1.x API
+              
                 response = openai_client.chat.completions.create(
                     model=OPENAI_MODEL,
                     messages=messages,
@@ -339,7 +299,7 @@ def call_openai(prompt: str) -> str:
             logger.error(f"OpenAI API call failed (attempt {attempt + 1}/{max_retries}): {e}")
             if attempt == max_retries - 1:
                 raise
-            time.sleep(2 ** attempt)  # Exponential backoff
+            time.sleep(2 ** attempt) 
     
     raise Exception("Failed to get response from OpenAI after all retries")
 
@@ -387,10 +347,8 @@ def format_conversation(messages: List[Dict[str, str]]) -> str:
             lines.append(f"Candidate: {msg['text']}")
     return "\n".join(lines)
 
-# ------------------------------------------------------------------
-# Routes
-# ------------------------------------------------------------------
 
+# Routes
 @router.post("/start")
 async def start_interview(
     request: Request,
@@ -408,26 +366,21 @@ async def start_interview(
     logger.info(f"Headers: {dict(request.headers)}")
     
     try:
-        # 1) Check for auth token in multiple places
         token = None
-        
-        # First try cookies
+
         token = request.cookies.get("token")
         logger.info(f"Token from cookies: {token is not None}")
         
-        # If not in cookies, try form data
         if not token and auth_token:
             token = auth_token
             logger.info(f"Token from form data: {token is not None}")
-            
-        # If still not found, try Authorization header
+
         if not token:
             auth_header = request.headers.get("Authorization")
             if auth_header and auth_header.startswith("Bearer "):
-                token = auth_header[7:]  # Remove 'Bearer ' prefix
+                token = auth_header[7:] 
                 logger.info(f"Token from Authorization header: {token is not None}")
         
-        # No token found in any source
         if not token:
             logger.warning("No authentication token found in any source")
             return JSONResponse(
@@ -435,7 +388,7 @@ async def start_interview(
                 content={"detail": "Authentication required"}
             )
             
-        # 2) Verify token
+       
         try:
             logger.info(f"Verifying token")
             payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
@@ -454,7 +407,7 @@ async def start_interview(
                 content={"detail": f"Invalid token: {str(e)}"}
             )
 
-        # 3) Validate required parameters
+        
         if not job_role:
             logger.error("Missing job_role parameter")
             return JSONResponse(
@@ -469,11 +422,11 @@ async def start_interview(
                 content={"detail": "Either CV file or CV ID must be provided"}
             )
 
-        # 4) Handle CV content
+       
         cv_text = None
         stored_cv_id = None
         
-        # Import the CV utilities module
+       
         try:
             from .cv_utils import (
                 ensure_uploads_dir, generate_timestamp_id, clean_filename,
@@ -481,46 +434,38 @@ async def start_interview(
             )
         except ImportError:
             logger.warning("cv_utils module not found, using built-in functions")
-            # Use basic functionality if module not available
+           
             ensure_uploads_dir = lambda: os.makedirs("/app/uploads", exist_ok=True) or "/app/uploads"
             generate_timestamp_id = lambda: f"{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}-{''.join(random.choices('abcdefghijklmnopqrstuvwxyz0123456789', k=6))}"
             clean_filename = lambda f: f.replace(' ', '_').replace('/', '_').replace('\\', '_')
         
-        # Process CV based on whether we have a file or ID
+        
         if cv_file:
             logger.info(f"Processing uploaded CV file: {cv_file.filename}")
             try:
-                # Ensure uploads directory exists
+               
                 uploads_dir = ensure_uploads_dir()
-                
-                # Generate a timestamp-based ID
                 timestamp_id = generate_timestamp_id()
-                
-                # Create filename with timestamp ID
                 clean_filename_str = clean_filename(cv_file.filename)
                 filename = f"{timestamp_id}_{clean_filename_str}"
                 file_path = os.path.join(uploads_dir, filename)
                 
-                # Save file to disk
+
                 content = await cv_file.read()
                 with open(file_path, "wb") as f:
                     f.write(content)
-                await cv_file.seek(0)  # Reset file pointer for future reading
+                await cv_file.seek(0) 
                 
                 logger.info(f"CV file saved: {file_path}")
-                
-                # Extract text from CV
+
                 cv_text = extract_text_from_cv(file_path)
                 
                 if cv_text:
                     logger.info(f"Successfully extracted {len(cv_text)} characters from CV")
-                    
-                    # Save CV to MongoDB cvs collection
                     db = conversations_col.database
                     cv_collection = db.get_collection("cvs")
                     
                     if cv_collection is not None:
-                        # Save to MongoDB
                         try:
                             cv_document = {
                                 "_id": ObjectId(),
@@ -541,7 +486,6 @@ async def start_interview(
                             logger.info(f"Saved CV to MongoDB with ID: {stored_cv_id}")
                         except Exception as db_err:
                             logger.error(f"Error saving CV to MongoDB: {db_err}")
-                            # Continue anyway, we'll use the extracted text
                     else:
                         logger.warning("CV collection not found in database")
                 else:
@@ -558,7 +502,6 @@ async def start_interview(
                 )
         elif cv_id:
             logger.info(f"Looking up CV by ID: {cv_id}")
-            # Get CV collection
             db = conversations_col.database
             cv_collection = db.get_collection("cvs")
             
@@ -569,13 +512,12 @@ async def start_interview(
                     content={"detail": "CV storage not available"}
                 )
                 
-            # Find CV document
+
             try:
-                # Try to find CV document using imported function if available
                 if 'find_cv_by_id' in locals():
                     cv_document = await find_cv_by_id(db, cv_id, user_id)
                 else:
-                    # Fallback method
+           
                     try:
                         object_id = ObjectId(cv_id) if len(cv_id) == 24 else cv_id
                         cv_document = await cv_collection.find_one({
@@ -595,28 +537,21 @@ async def start_interview(
                         content={"detail": f"CV not found: {cv_id}"}
                     )
                     
-                # Store the CV ID for later reference
                 stored_cv_id = cv_id
-                
-                # Get CV text from document
                 cv_text = cv_document.get("extractedText")
-                
-                # If no extracted text, try to extract from file
+
                 if not cv_text or len(cv_text.strip()) < 100:
                     logger.info(f"No valid extracted text found, attempting to extract from file")
                     
-                    # Get potential file paths
                     if 'get_potential_file_paths' in locals():
                         potential_paths = get_potential_file_paths(cv_document)
                     else:
-                        # Fallback method
                         potential_paths = []
                         if "filePath" in cv_document:
                             potential_paths.append(cv_document["filePath"])
                         if "filename" in cv_document:
                             potential_paths.append(f"/app/uploads/{cv_document['filename']}")
                     
-                    # Try each path
                     for path in potential_paths:
                         if os.path.exists(path):
                             logger.info(f"Found file at path: {path}")
@@ -624,8 +559,7 @@ async def start_interview(
                                 cv_text = extract_text_from_document(path, vision_client, openai_client)
                                 if cv_text and len(cv_text.strip()) >= 100:
                                     logger.info(f"Successfully extracted {len(cv_text)} chars from file")
-                                    
-                                    # Update the database with extracted text
+
                                     try:
                                         await cv_collection.update_one(
                                             {"_id": cv_document["_id"]},
@@ -642,7 +576,6 @@ async def start_interview(
                             except Exception as extract_err:
                                 logger.error(f"Error extracting text from file: {extract_err}")
                     
-                    # If still no text, return error
                     if not cv_text or len(cv_text.strip()) < 100:
                         logger.error("Could not extract sufficient text from CV file")
                         return JSONResponse(
@@ -650,7 +583,6 @@ async def start_interview(
                             content={"detail": "Could not extract sufficient content from CV"}
                         )
                 else:
-                    # Update last used timestamp
                     try:
                         await cv_collection.update_one(
                             {"_id": cv_document["_id"]},
@@ -665,26 +597,21 @@ async def start_interview(
                     status_code=500,
                     content={"detail": f"Error retrieving CV: {str(e)}"}
                 )
-        
-        # Validate CV text
+
         if not cv_text or len(cv_text.strip()) < 100:
             logger.warning(f"Insufficient CV text: {len(cv_text) if cv_text else 0} chars")
             return JSONResponse(
                 status_code=400,
                 content={"detail": "Could not extract sufficient content from CV"}
             )
-
-        # 5) Generate session ID
         session_id = str(uuid.uuid4())
         logger.info(f"Generated session ID: {session_id}")
 
-        # 6) Create initial AI message
         initial_ai_text = (
             f"Thank you for your CV for the {job_role} position. "
             "Let's begin the interview. Can you tell me about yourself?"
         )
 
-        # 7) Create conversation document
         conversation_doc = {
             "session_id": session_id,
             "user_id": user_id,
@@ -694,27 +621,27 @@ async def start_interview(
             "created_at": datetime.utcnow(),
             "finished": False,
             "max_questions": max_questions,
-            "cv_id": stored_cv_id  # Include CV ID reference if available
+            "cv_id": stored_cv_id  
         }
 
-        # 8) Save to MongoDB
+
         if conversations_col is not None:
             try:
                 await conversations_col.insert_one(conversation_doc)
                 logger.info(f"Saved conversation to MongoDB: {session_id}")
             except Exception as db_err:
                 logger.error(f"MongoDB error: {db_err}")
-                # Continue anyway - we'll return the session even if DB save fails
+               
         else:
             logger.warning("MongoDB not available, session not saved")
 
-        # 9) Prepare response
+        
         response_data = {
             "session_id": session_id,
             "first_ai_message": {"sender": "ai", "text": initial_ai_text}
         }
         
-        # Include CV ID in response if provided
+  
         if stored_cv_id:
             response_data["cv_id"] = stored_cv_id
         
@@ -736,10 +663,9 @@ async def interview_chat(request: ChatRequest):
     """
     logger.info(f"Chat request for session: {request.session_id}")
     try:
-        # 1) Retrieve conversation from MongoDB
+        # Retrieve conversation from MongoDB
         if conversations_col is None:
             logger.warning("MongoDB not available")
-            # Fallback to a stateless response
             fallback_response = ChatResponse(
                 messages=[
                     ChatMessage(sender="user", text=request.user_message),
@@ -751,7 +677,7 @@ async def interview_chat(request: ChatRequest):
             )
             return fallback_response
             
-        # 2) Find the conversation
+        # Find the conversation
         convo = await conversations_col.find_one({"session_id": request.session_id})
         if not convo:
             logger.warning(f"Session not found: {request.session_id}")
@@ -760,7 +686,7 @@ async def interview_chat(request: ChatRequest):
                 content={"detail": "Session not found"}
             )
 
-        # 3) Check if conversation is finished
+        # Check if conversation is finished
         if convo.get("finished", False):
             logger.info(f"Session already finished: {request.session_id}")
             return ChatResponse(
@@ -770,21 +696,18 @@ async def interview_chat(request: ChatRequest):
                 )]
             )
 
-        # 4) Add user message to conversation
+        # Add user message to conversation
         messages = convo["messages"]
         messages.append({"sender": "user", "text": request.user_message})
         logger.info(f"Added user message to session {request.session_id}")
 
-        # Get the max questions value for this conversation (with fallback to default)
         max_questions = convo.get("max_questions", MAX_INTERVIEW_QUESTIONS)
         logger.info(f"Using max_questions={max_questions} for this session")
 
-        # 5) Check if we should provide final feedback
+        # Check if we should provide final feedback
         ai_message_count = sum(1 for m in messages if m["sender"] == "ai")
         if ai_message_count >= max_questions:
             logger.info(f"Session {request.session_id} reached max questions ({max_questions}), generating final feedback")
-            
-            # Generate final feedback
             conversation_text = format_conversation(messages)
             feedback_prompt = (
                 "You are a professional interviewer who just finished interviewing a candidate. "
@@ -797,7 +720,7 @@ async def interview_chat(request: ChatRequest):
             final_feedback = call_openai(feedback_prompt)
             messages.append({"sender": "ai", "text": final_feedback})
             
-            # Mark conversation as finished
+   
             await conversations_col.update_one(
                 {"session_id": request.session_id},
                 {"$set": {"messages": messages, "finished": True}}
@@ -808,7 +731,7 @@ async def interview_chat(request: ChatRequest):
                 messages=[ChatMessage(sender=m["sender"], text=m["text"]) for m in messages]
             )
 
-        # 6) Generate AI response for normal conversation flow
+        # Generate AI response for normal conversation flow
         logger.info(f"Generating AI response for session {request.session_id}")
         prompt = await build_openai_prompt(
             cv_text=convo["cv_text"],
@@ -819,7 +742,7 @@ async def interview_chat(request: ChatRequest):
         ai_reply = call_openai(prompt)
         messages.append({"sender": "ai", "text": ai_reply})
         
-        # 7) Update conversation in database
+        # Update conversation in database
         try:
             await conversations_col.update_one(
                 {"session_id": request.session_id},
@@ -828,8 +751,7 @@ async def interview_chat(request: ChatRequest):
             logger.info(f"Updated conversation in database for session {request.session_id}")
         except Exception as db_err:
             logger.error(f"Error updating MongoDB: {db_err}")
-            # Continue anyway - we'll return the messages even if DB update fails
-        # 8) Return the response
+        # Return the response
         return ChatResponse(
             messages=[ChatMessage(sender=m["sender"], text=m["text"]) for m in messages]
         )
@@ -840,7 +762,7 @@ async def interview_chat(request: ChatRequest):
             status_code=500,
             content={"detail": f"An error occurred: {str(e)}"}
         )
-# Add this route to your interviewprep.py file
+
 
 @router.get("/sessions")
 async def get_sessions(request: Request):
@@ -849,7 +771,6 @@ async def get_sessions(request: Request):
     """
     logger.info("GET /sessions endpoint called")
     
-    # 1) Verify authentication
     token = request.cookies.get("token")
     if not token:
         logger.warning("No authentication token found")
@@ -875,7 +796,7 @@ async def get_sessions(request: Request):
             content={"detail": "Invalid token"}
         )
     
-    # 2) Check if MongoDB is available
+
     if conversations_col is None:
         logger.error("MongoDB not connected")
         return JSONResponse(
@@ -883,7 +804,7 @@ async def get_sessions(request: Request):
             content={"detail": "Database unavailable"}
         )
         
-    # 3) Retrieve sessions
+
     try:
         cursor = conversations_col.find(
             {"user_id": user_id},
@@ -892,21 +813,17 @@ async def get_sessions(request: Request):
                 "job_role": 1,
                 "created_at": 1,
                 "finished": 1,
-                "messages": 1,  # We need this to count messages
-                # Exclude large fields like cv_text
+                "messages": 1, 
             }
-        ).sort("created_at", -1)  # Newest first
+        ).sort("created_at", -1) 
         
-        sessions = await cursor.to_list(length=100)  # Limit to 100 sessions
+        sessions = await cursor.to_list(length=100)  
         
-        # Format the response
         formatted_sessions = []
         for session in sessions:
-            # Convert ObjectId to string and format dates
             session_id = session.get("session_id", "")
             created_at = session.get("created_at", datetime.utcnow())
-            
-            # Format the session data
+
             formatted_session = {
                 "id": session_id,
                 "job_role": session.get("job_role", "Unknown"),
@@ -933,7 +850,6 @@ async def get_session(session_id: str, request: Request):
     """
     logger.info(f"GET /session/{session_id} endpoint called")
     
-    # 1) Verify authentication
     token = request.cookies.get("token")
     if not token:
         logger.warning("No authentication token found")
@@ -958,16 +874,14 @@ async def get_session(session_id: str, request: Request):
             status_code=401,
             content={"detail": "Invalid token"}
         )
-    
-    # 2) Check if MongoDB is available
+
     if conversations_col is None:
         logger.error("MongoDB not connected")
         return JSONResponse(
             status_code=503,
             content={"detail": "Database unavailable"}
         )
-        
-    # 3) Retrieve the specific session
+
     try:
         session = await conversations_col.find_one({"session_id": session_id})
         
@@ -977,8 +891,7 @@ async def get_session(session_id: str, request: Request):
                 status_code=404,
                 content={"detail": "Session not found"}
             )
-            
-        # Check if user has permission to access this session
+
         if session.get("user_id") != user_id:
             logger.warning(f"Unauthorized access attempt: user {user_id} trying to access session {session_id}")
             return JSONResponse(
@@ -986,7 +899,6 @@ async def get_session(session_id: str, request: Request):
                 content={"detail": "Unauthorized"}
             )
             
-        # Format the response
         response_data = {
             "session_id": session.get("session_id"),
             "job_role": session.get("job_role"),
@@ -1006,9 +918,6 @@ async def get_session(session_id: str, request: Request):
             content={"detail": f"Error retrieving session: {str(e)}"}
         )
 
-# ------------------------------------------------------------------
-# Health check endpoint
-# ------------------------------------------------------------------
 
 @router.get("/health")
 async def health_check():
@@ -1029,15 +938,12 @@ async def health_check():
         }
     }
     
-    # Overall status depends on critical services
     if conversations_col is None:
         health_status["status"] = "degraded"
         
     return health_status
 
-# ------------------------------------------------------------------
-# Session management endpoints
-# ------------------------------------------------------------------
+
 
 @router.get("/sessions/{user_id}")
 async def get_user_sessions(user_id: str, request: Request):
@@ -1045,8 +951,7 @@ async def get_user_sessions(user_id: str, request: Request):
     Get all interview sessions for a user.
     """
     logger.info(f"Getting sessions for user: {user_id}")
-    
-    # 1) Verify authentication
+
     token = request.cookies.get("token")
     if not token:
         logger.warning("No authentication token found")
@@ -1058,8 +963,6 @@ async def get_user_sessions(user_id: str, request: Request):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
         token_user_id = payload.get("userId")
-        
-        # Only allow users to access their own sessions (or admin users)
         is_admin = payload.get("isAdmin", False)
         if token_user_id != user_id and not is_admin:
             logger.warning(f"Unauthorized access attempt: {token_user_id} trying to access {user_id}'s data")
@@ -1073,8 +976,7 @@ async def get_user_sessions(user_id: str, request: Request):
             status_code=401,
             content={"detail": "Invalid token"}
         )
-    
-    # 2) Check if MongoDB is available
+
     if conversations_col is None:
         logger.error("MongoDB not connected")
         return JSONResponse(
@@ -1082,7 +984,6 @@ async def get_user_sessions(user_id: str, request: Request):
             content={"detail": "Database unavailable"}
         )
         
-    # 3) Retrieve sessions
     try:
         cursor = conversations_col.find(
             {"user_id": user_id},
@@ -1092,16 +993,14 @@ async def get_user_sessions(user_id: str, request: Request):
                 "created_at": 1,
                 "finished": 1,
                 "max_questions": 1,
-                # Exclude large fields like cv_text and full messages
+               
             }
-        ).sort("created_at", -1)  # Newest first
+        ).sort("created_at", -1) 
         
-        sessions = await cursor.to_list(length=100)  # Limit to 100 sessions
+        sessions = await cursor.to_list(length=100) 
         
-        # Format the response
         formatted_sessions = []
         for session in sessions:
-            # Convert ObjectId to string and format dates
             session["_id"] = str(session.get("_id", ""))
             if "created_at" in session:
                 session["created_at"] = session["created_at"].isoformat()
@@ -1124,7 +1023,6 @@ async def delete_session(session_id: str, request: Request):
     """
     logger.info(f"Deleting session: {session_id}")
     
-    # 1) Verify authentication
     token = request.cookies.get("token")
     if not token:
         logger.warning("No authentication token found")
@@ -1144,7 +1042,6 @@ async def delete_session(session_id: str, request: Request):
             content={"detail": "Invalid token"}
         )
     
-    # 2) Check if MongoDB is available
     if conversations_col is None:
         logger.error("MongoDB not connected")
         return JSONResponse(
@@ -1152,7 +1049,6 @@ async def delete_session(session_id: str, request: Request):
             content={"detail": "Database unavailable"}
         )
         
-    # 3) Find the session
     session = await conversations_col.find_one({"session_id": session_id})
     if not session:
         logger.warning(f"Session not found: {session_id}")
@@ -1161,15 +1057,12 @@ async def delete_session(session_id: str, request: Request):
             content={"detail": "Session not found"}
         )
         
-    # 4) Check authorization
     if session["user_id"] != user_id and not is_admin:
         logger.warning(f"Unauthorized delete attempt: {user_id} trying to delete session {session_id}")
         return JSONResponse(
             status_code=403,
             content={"detail": "Unauthorized access"}
         )
-        
-    # 5) Delete the session
     result = await conversations_col.delete_one({"session_id": session_id})
     if result.deleted_count == 0:
         logger.warning(f"Session not deleted: {session_id}")
@@ -1181,9 +1074,6 @@ async def delete_session(session_id: str, request: Request):
     logger.info(f"Successfully deleted session {session_id}")
     return JSONResponse(content={"detail": "Session deleted successfully"})
 
-# ------------------------------------------------------------------
-# OpenAI Client Version Check and Adaptation
-# ------------------------------------------------------------------
 
 @router.get("/openai-version")
 async def openai_version_check():
@@ -1194,7 +1084,6 @@ async def openai_version_check():
         return {"status": "OpenAI not installed"}
     
     try:
-        # Try to detect which version of the OpenAI library is installed
         version_info = {
             "installed": True,
             "api_key_configured": bool(openai_api_key),
@@ -1202,7 +1091,7 @@ async def openai_version_check():
             "model": OPENAI_MODEL
         }
         
-        # Check for attributes specific to different versions
+        
         if hasattr(openai, "OpenAI"):
             version_info["version"] = "v1.x"
             version_info["client_type"] = "Modern client-based API"
@@ -1219,9 +1108,6 @@ async def openai_version_check():
             "error": str(e)
         }
 
-# ------------------------------------------------------------------
-# Vision Processing Endpoint
-# ------------------------------------------------------------------
 
 @router.post("/process-cv")
 async def process_cv(cv_file: UploadFile = File(...)):
@@ -1229,13 +1115,9 @@ async def process_cv(cv_file: UploadFile = File(...)):
     Process a CV file and return extracted text.
     """
     try:
-        # Save file
         file_path = await save_cv_to_disk(cv_file)
-        
-        # Extract text
         cv_text = extract_text_from_cv(file_path)
         
-        # Return results
         return {
             "status": "success",
             "filename": cv_file.filename,
@@ -1251,9 +1133,7 @@ async def process_cv(cv_file: UploadFile = File(...)):
             content={"detail": f"Error processing CV: {str(e)}"}
         )
 
-# ------------------------------------------------------------------
-# Debug Endpoint for API-Dependent Features
-# ------------------------------------------------------------------
+
 
 @router.get("/api-status")
 async def api_status():
@@ -1282,20 +1162,16 @@ async def api_status():
         }
     }
     
-    # Test MongoDB connection
     if conversations_col is not None:
         try:
-            # Just check if we can run a simple command
             await db.command({"ping": 1})
             status["mongodb"]["ping"] = "successful"
         except Exception as e:
             status["mongodb"]["ping"] = "failed"
             status["mongodb"]["error"] = str(e)
-    
-    # Test OpenAI connection
+
     if openai is not None and openai_api_key:
         try:
-            # Use a minimal API call to test connectivity
             test_response = call_openai("Hello, this is a test.")
             status["openai"]["test_call"] = "successful" if test_response else "failed"
             status["openai"]["response_length"] = len(test_response) if test_response else 0
@@ -1305,9 +1181,6 @@ async def api_status():
     
     return status
 
-# ------------------------------------------------------------------
-# Config Update Endpoint
-# ------------------------------------------------------------------
 
 class ConfigUpdateRequest(BaseModel):
     max_interview_questions: int = Field(..., ge=1, le=20)
@@ -1320,8 +1193,7 @@ async def update_config(request: Request, config_update: ConfigUpdateRequest):
     Requires admin authentication.
     """
     global MAX_INTERVIEW_QUESTIONS, openai_api_key, openai_client
-    
-    # Verify authentication
+
     token = request.cookies.get("token")
     if not token:
         logger.warning("No authentication token found")
@@ -1341,16 +1213,13 @@ async def update_config(request: Request, config_update: ConfigUpdateRequest):
                 content={"detail": "Admin access required"}
             )
             
-        # Update max questions setting
         if config_update.max_interview_questions != MAX_INTERVIEW_QUESTIONS:
             old_value = MAX_INTERVIEW_QUESTIONS
             MAX_INTERVIEW_QUESTIONS = config_update.max_interview_questions
             logger.info(f"Updated MAX_INTERVIEW_QUESTIONS from {old_value} to {MAX_INTERVIEW_QUESTIONS}")
             
-        # Update OpenAI API key if provided
         if config_update.api_key:
             openai_api_key = config_update.api_key
-            # Reinitialize client with new key
             if openai is not None and hasattr(openai, 'OpenAI'):
                 openai_client = OpenAI(api_key=openai_api_key)
                 logger.info("Reinitialized OpenAI client with new API key")
@@ -1381,9 +1250,6 @@ async def update_config(request: Request, config_update: ConfigUpdateRequest):
             content={"detail": f"Error updating configuration: {str(e)}"}
         )
 
-# ------------------------------------------------------------------
-# Update interview session settings
-# ------------------------------------------------------------------
 
 class SessionConfigUpdate(BaseModel):
     max_questions: int = Field(..., ge=1, le=20)
@@ -1394,8 +1260,6 @@ async def update_session_config(session_id: str, config: SessionConfigUpdate, re
     Update configuration for a specific interview session.
     """
     logger.info(f"Updating config for session: {session_id}")
-    
-    # Verify authentication
     token = request.cookies.get("token")
     if not token:
         logger.warning("No authentication token found")
@@ -1408,8 +1272,7 @@ async def update_session_config(session_id: str, config: SessionConfigUpdate, re
         payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
         user_id = payload.get("userId")
         is_admin = payload.get("isAdmin", False)
-        
-        # Check if MongoDB is available
+
         if conversations_col is None:
             logger.error("MongoDB not connected")
             return JSONResponse(
@@ -1417,7 +1280,6 @@ async def update_session_config(session_id: str, config: SessionConfigUpdate, re
                 content={"detail": "Database unavailable"}
             )
             
-        # Find the session
         session = await conversations_col.find_one({"session_id": session_id})
         if not session:
             logger.warning(f"Session not found: {session_id}")
@@ -1425,16 +1287,14 @@ async def update_session_config(session_id: str, config: SessionConfigUpdate, re
                 status_code=404,
                 content={"detail": "Session not found"}
             )
-            
-        # Check authorization (user owns session or is admin)
+
         if session["user_id"] != user_id and not is_admin:
             logger.warning(f"Unauthorized config update attempt: {user_id} for session {session_id}")
             return JSONResponse(
                 status_code=403,
                 content={"detail": "Unauthorized access"}
             )
-            
-        # Don't allow updates to finished sessions
+
         if session.get("finished", False):
             logger.warning(f"Attempted to update config for finished session: {session_id}")
             return JSONResponse(
@@ -1442,7 +1302,6 @@ async def update_session_config(session_id: str, config: SessionConfigUpdate, re
                 content={"detail": "Cannot update finished session"}
             )
             
-        # Update the session config
         result = await conversations_col.update_one(
             {"session_id": session_id},
             {"$set": {"max_questions": config.max_questions}}
@@ -1477,9 +1336,6 @@ async def update_session_config(session_id: str, config: SessionConfigUpdate, re
             content={"detail": f"Error updating session configuration: {str(e)}"}
         )
 
-# ------------------------------------------------------------------
-# Reset conversation endpoint
-# ------------------------------------------------------------------
 
 @router.post("/sessions/{session_id}/reset")
 async def reset_session(session_id: str, request: Request):
@@ -1488,7 +1344,6 @@ async def reset_session(session_id: str, request: Request):
     """
     logger.info(f"Resetting session: {session_id}")
     
-    # Verify authentication
     token = request.cookies.get("token")
     if not token:
         logger.warning("No authentication token found")
@@ -1501,8 +1356,6 @@ async def reset_session(session_id: str, request: Request):
         payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
         user_id = payload.get("userId")
         is_admin = payload.get("isAdmin", False)
-        
-        # Check if MongoDB is available
         if conversations_col is None:
             logger.error("MongoDB not connected")
             return JSONResponse(
@@ -1510,7 +1363,6 @@ async def reset_session(session_id: str, request: Request):
                 content={"detail": "Database unavailable"}
             )
             
-        # Find the session
         session = await conversations_col.find_one({"session_id": session_id})
         if not session:
             logger.warning(f"Session not found: {session_id}")
@@ -1519,7 +1371,6 @@ async def reset_session(session_id: str, request: Request):
                 content={"detail": "Session not found"}
             )
             
-        # Check authorization
         if session["user_id"] != user_id and not is_admin:
             logger.warning(f"Unauthorized reset attempt: {user_id} for session {session_id}")
             return JSONResponse(
@@ -1527,14 +1378,12 @@ async def reset_session(session_id: str, request: Request):
                 content={"detail": "Unauthorized access"}
             )
             
-        # Create initial AI message
         job_role = session["job_role"]
         initial_ai_text = (
             f"Thank you for uploading your CV for the {job_role} position. "
             "Let's begin the interview. Can you tell me about yourself?"
         )
         
-        # Reset the session
         result = await conversations_col.update_one(
             {"session_id": session_id},
             {
@@ -1575,11 +1424,6 @@ async def reset_session(session_id: str, request: Request):
             content={"detail": f"Error resetting session: {str(e)}"}
         )
 
-# ------------------------------------------------------------------
-# Direct OpenAI CV Processing Endpoint
-# ------------------------------------------------------------------
-
-import base64
 
 @router.post("/process-cv-with-ai")
 async def process_cv_with_ai(cv_file: UploadFile = File(...)):
@@ -1594,14 +1438,10 @@ async def process_cv_with_ai(cv_file: UploadFile = File(...)):
         )
     
     try:
-        # Save file
         file_path = await save_cv_to_disk(cv_file)
         logger.info(f"CV saved for AI processing: {file_path}")
-        
-        # Determine file type
         file_ext = os.path.splitext(file_path)[1].lower()
         
-        # Prepare content type
         if file_ext in ['.pdf']:
             content_type = "application/pdf"
         elif file_ext in ['.jpg', '.jpeg']:
@@ -1611,17 +1451,14 @@ async def process_cv_with_ai(cv_file: UploadFile = File(...)):
         else:
             content_type = "application/octet-stream"
         
-        # Read file content
         with open(file_path, "rb") as f:
             file_content = f.read()
             
-        # Encode as base64
         file_b64 = base64.b64encode(file_content).decode('utf-8')
         
-        # Call OpenAI vision model
         try:
             response = openai_client.chat.completions.create(
-                model="gpt-4.1",  # Use vision-capable model
+                model="gpt-4.1", 
                 messages=[
                     {"role": "system", "content": "You are a helpful assistant that extracts text content from resume/CV documents."},
                     {"role": "user", "content": [

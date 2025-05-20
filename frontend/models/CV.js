@@ -1,9 +1,9 @@
-// frontend/models/CV.js
+
 import mongoose from 'mongoose';
 
 const CVSchema = new mongoose.Schema({
     userId: { 
-        type: mongoose.Schema.Types.Mixed, // Accepts both string and ObjectId
+        type: mongoose.Schema.Types.Mixed,
         ref: 'User', 
         required: true 
       },
@@ -38,14 +38,14 @@ const CVSchema = new mongoose.Schema({
     type: Date, 
     default: Date.now 
   },
-  // New field for timestamp-based ID for consistent file naming
+ 
   fileId: {
     type: String,
-    index: true  // Add index for faster lookups by fileId
+    index: true 
   }
 });
 
-// Create indexes for faster lookups
+
 CVSchema.index({ userId: 1 });
 CVSchema.index({ uploadedAt: -1 });
 

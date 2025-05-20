@@ -1148,15 +1148,7 @@ export default function CareerGuidance() {
             </div>
 
             {/* Download Report Button */}
-            <div className="mt-8 text-center">
-              <button
-                onClick={() => {/* Implement download functionality */ }}
-                className="px-6 py-3 bg-purple-600 text-white rounded-md hover:bg-purple-700 transition flex items-center mx-auto"
-              >
-                <ArrowRight className="mr-2 h-5 w-5" />
-                Download Full Career Report
-              </button>
-            </div>
+            
           </div>
         )}
       </div>

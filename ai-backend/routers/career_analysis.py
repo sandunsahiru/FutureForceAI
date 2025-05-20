@@ -24,8 +24,7 @@ from .interviewprep import call_openai
 async def fetch_job_market_data(job_role: str, location: str = None) -> Dict:
     """Fetch job market data for a role using available APIs"""
     logger.info(f"Fetching job market data for: {job_role}")
-    
-    # Try using JSearch API (RapidAPI)
+ 
     jsearch_key = os.getenv("JSEARCH_API_KEY")
     jsearch_host = os.getenv("JSEARCH_API_HOST")
     
@@ -58,11 +57,10 @@ async def fetch_job_market_data(job_role: str, location: str = None) -> Dict:
                         data = await response.json()
                         
                         if data.get("data") and len(data["data"]) > 0:
-                            # Process the job data
+                            
                             jobs = data["data"]
                             logger.info(f"JSearch API returned {len(jobs)} job listings")
                             
-                            # Extract salary information
                             salaries = [job.get("job_min_salary", 0) for job in jobs if job.get("job_min_salary")]
                             if salaries:
                                 min_salary = min(salaries)
@@ -77,8 +75,7 @@ async def fetch_job_market_data(job_role: str, location: str = None) -> Dict:
                             else:
                                 salary_data = {"median_salary": "Not available"}
                                 logger.info("No salary information available in job listings")
-                            
-                            # Extract top companies
+                   
                             companies = [job.get("employer_name") for job in jobs if job.get("employer_name")]
                             top_companies = list(set(companies))[:4]
                             
@@ -86,7 +83,7 @@ async def fetch_job_market_data(job_role: str, location: str = None) -> Dict:
                                 "role": job_role,
                                 "salary_data": salary_data,
                                 "demand_level": "High" if len(jobs) > 20 else "Medium" if len(jobs) > 10 else "Low",
-                                "growth_rate": f"{random.randint(5, 15)}% annually",  # Still using random as real data isn't available
+                                "growth_rate": f"{random.randint(5, 15)}% annually", 
                                 "top_companies": top_companies
                             }
                         else:
@@ -98,7 +95,7 @@ async def fetch_job_market_data(job_role: str, location: str = None) -> Dict:
         except Exception as e:
             logger.error(f"Error fetching job market data from JSearch API: {e}")
     
-    # Fall back to Adzuna API if available
+    # Fall back to Adzuna API 
     adzuna_app_id = os.getenv("ADZUNA_APP_ID")
     adzuna_api_key = os.getenv("ADZUNA_API_KEY")
     
@@ -106,10 +103,10 @@ async def fetch_job_market_data(job_role: str, location: str = None) -> Dict:
     
     if adzuna_app_id and adzuna_api_key:
         try:
-            # Use Adzuna API to get job market data
-            country_code = "us"  # Default to US
             
-            # Build URL for Adzuna API
+            country_code = "us"
+            
+            
             url = f"https://api.adzuna.com/v1/api/jobs/{country_code}/search/1"
             
             params = {
@@ -136,7 +133,7 @@ async def fetch_job_market_data(job_role: str, location: str = None) -> Dict:
                             jobs = data["results"]
                             logger.info(f"Adzuna API returned {len(jobs)} job listings")
                             
-                            # Extract salary information
+                            
                             salaries = []
                             for job in jobs:
                                 if "salary_min" in job and job["salary_min"]:
@@ -156,7 +153,7 @@ async def fetch_job_market_data(job_role: str, location: str = None) -> Dict:
                                 salary_data = {"median_salary": "Not available"}
                                 logger.info("No salary information available in Adzuna job listings")
                             
-                            # Extract top companies
+                            
                             companies = [job.get("company", {}).get("display_name") for job in jobs if job.get("company", {}).get("display_name")]
                             top_companies = list(set(companies))[:4]
                             
@@ -176,7 +173,7 @@ async def fetch_job_market_data(job_role: str, location: str = None) -> Dict:
         except Exception as e:
             logger.error(f"Error fetching job market data from Adzuna API: {e}")
     
-    # Fallback to mock data if all APIs fail
+   
     logger.info("All APIs failed or not configured, falling back to mock data")
     
     salary_data = {
@@ -201,11 +198,11 @@ async def fetch_learning_resources(skill: str) -> List[Dict]:
     logger.info(f"Fetching learning resources for skill: {skill}")
     
     try:
-        # Get 2Captcha API key from environment variable
+       
         two_captcha_api_key = os.getenv("TWOCAPTCHA_API_KEY")
         logger.info(f"2Captcha API Key present: {bool(two_captcha_api_key)}")
         
-        # Prepare the search URL
+       
         encoded_skill = quote(skill)
         coursera_search_url = f"https://www.coursera.org/courses?query={encoded_skill}"
         logger.info(f"Scraping courses from: {coursera_search_url}")
@@ -222,7 +219,7 @@ async def fetch_learning_resources(skill: str) -> List[Dict]:
             "Mozilla/5.0 (iPad; CPU OS 15_2_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.2 Mobile/15E148 Safari/604.1"
         ]
         
-        # Enhanced headers that more closely mimic a real browser
+        # Enhanced headers
         headers = {
             "User-Agent": random.choice(user_agents),
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9",
@@ -245,7 +242,6 @@ async def fetch_learning_resources(skill: str) -> List[Dict]:
         courses = []
         
         async with aiohttp.ClientSession() as session:
-            # Add cookies to potentially bypass some anti-scraping
             cookies = {
                 "CSRF3-Token": str(uuid.uuid4()),
                 "csrftoken": str(uuid.uuid4()),
@@ -256,7 +252,7 @@ async def fetch_learning_resources(skill: str) -> List[Dict]:
                 "_fbp": f"fb.1.{int(time.time())}.{random.randint(1000000000, 9999999999)}"
             }
             
-            # First request to get the page with cookies
+           
             async with session.get(
                 coursera_search_url, 
                 headers=headers, 
@@ -270,13 +266,12 @@ async def fetch_learning_resources(skill: str) -> List[Dict]:
                     html_content = await response.text()
                     logger.info(f"Received HTML content (length: {len(html_content)})")
                     
-                    # Check if CAPTCHA is present
+                   
                     captcha_detected = False
                     if "recaptcha" in html_content.lower() or "captcha" in html_content.lower():
                         logger.warning("CAPTCHA detected on Coursera page")
                         captcha_detected = True
-                        
-                        # Try to extract the reCAPTCHA site key with improved regex
+                      
                         site_key = None
                         site_key_patterns = [
                             r'data-sitekey="([^"]+)"',
@@ -295,25 +290,23 @@ async def fetch_learning_resources(skill: str) -> List[Dict]:
                                 break
                         
                         if site_key:
-                            # Attempt to solve the CAPTCHA
+                           
                             try:
                                 captcha_solution = await solve_with_2captcha(site_key, coursera_search_url, two_captcha_api_key)
                                 if captcha_solution:
                                     logger.info("CAPTCHA solution received, attempting to bypass")
                                     
-                                    # Try different methods to bypass CAPTCHA
-                                    
-                                    # Method 1: POST with form data
+                        
                                     form_data = {
                                         "g-recaptcha-response": captcha_solution,
-                                        "h-captcha-response": captcha_solution  # Some sites use hCaptcha
+                                        "h-captcha-response": captcha_solution  
                                     }
                                     
                                     captcha_headers = headers.copy()
                                     captcha_headers["Content-Type"] = "application/x-www-form-urlencoded"
                                     
                                     try:
-                                        post_url = response.url.human_repr()  # Use the final URL after any redirects
+                                        post_url = response.url.human_repr() 
                                         async with session.post(
                                             post_url, 
                                             headers=captcha_headers, 
@@ -330,7 +323,7 @@ async def fetch_learning_resources(skill: str) -> List[Dict]:
                                     except Exception as post_err:
                                         logger.error(f"Error with CAPTCHA POST request: {post_err}")
                                     
-                                    # Method 2: GET with CAPTCHA solution in cookies and headers
+                                   
                                     if captcha_detected:
                                         try:
                                             cookies.update({
@@ -342,7 +335,7 @@ async def fetch_learning_resources(skill: str) -> List[Dict]:
                                             captcha_headers["X-Captcha-Token"] = captcha_solution
                                             captcha_headers["X-Recaptcha-Token"] = captcha_solution
                                             
-                                            # Add cookies to headers (some servers check here too)
+                                            # Add cookies to headers
                                             cookie_str = "; ".join([f"{k}={v}" for k, v in cookies.items()])
                                             captcha_headers["Cookie"] = cookie_str
                                             
@@ -365,19 +358,11 @@ async def fetch_learning_resources(skill: str) -> List[Dict]:
                             except Exception as captcha_err:
                                 logger.error(f"Error solving CAPTCHA: {captcha_err}")
                     
-                    # Parse the HTML with BeautifulSoup
+                    #BeautifulSoup
                     soup = BeautifulSoup(html_content, 'html.parser')
-                    
-                    # Save HTML for debugging if needed
-                    # with open(f"/tmp/coursera_{skill.replace(' ', '_')}.html", "w") as f:
-                    #     f.write(html_content)
-                    
-                    # ----------- COMPREHENSIVE CARD EXTRACTION STRATEGIES -----------
-                    
-                    # Track all potential course data for later filtering
                     potential_courses = []
                     
-                    # STRATEGY 1: Look for product card elements with specific test IDs
+                    # Look for product card elements with specific test IDs
                     product_cards = soup.find_all('div', {'data-testid': 'product-card-cds'})
                     logger.info(f"Strategy 1: Found {len(product_cards)} product cards with test ID")
                     
@@ -389,13 +374,13 @@ async def fetch_learning_resources(skill: str) -> List[Dict]:
                         except Exception as e:
                             logger.error(f"Error processing product card: {e}")
                     
-                    # STRATEGY 2: Look for standard course cards by class
+                    # Look for standard course cards by class
                     card_classes = [
                         lambda c: c and 'card' in c.lower() if c else False,
                         lambda c: c and 'product-card' in c.lower() if c else False,
                         lambda c: c and 'course-card' in c.lower() if c else False,
                         lambda c: c and 'ais-hit' in c.lower() if c else False,
-                        lambda c: c and 'css-1ssv3q1' in c if c else False  # Example of Coursera's React-generated class
+                        lambda c: c and 'css-1ssv3q1' in c if c else False 
                     ]
                     
                     for class_check in card_classes:
@@ -403,7 +388,6 @@ async def fetch_learning_resources(skill: str) -> List[Dict]:
                         logger.info(f"Strategy 2: Found {len(course_cards)} course cards with class check")
                         
                         for card in course_cards:
-                            # Avoid duplicates by checking if this might be a card we already processed
                             already_processed = False
                             for processed_card in product_cards:
                                 if card.get_text() == processed_card.get_text():
@@ -418,27 +402,26 @@ async def fetch_learning_resources(skill: str) -> List[Dict]:
                                 except Exception as e:
                                     logger.error(f"Error processing course card: {e}")
                     
-                    # STRATEGY 3: Look for direct course links and extract surrounding containers
+                    # Look for direct course links 
                     if len(potential_courses) < 4:
                         course_links = soup.find_all('a', href=lambda h: h and ('/learn/' in h or '/specialization/' in h or '/professional-certificate/' in h))
                         logger.info(f"Strategy 3: Found {len(course_links)} direct course links")
                         
-                        for link in course_links[:10]:  # Limit to 10 to avoid processing too many
+                        for link in course_links[:10]: 
                             try:
-                                # Try to get the parent container
+                                
                                 container = link
                                 parent_levels = 0
-                                while parent_levels < 4:  # Go up to 4 levels
+                                while parent_levels < 4:  
                                     if container.parent and container.parent.name != 'html':
                                         container = container.parent
                                         parent_levels += 1
                                         
-                                        # If this container has multiple elements, it might be a card
+                                    
                                         children = list(container.children)
                                         if len(children) >= 3:
                                             course_data = extract_course_data(container)
                                             if course_data and course_data["title"] != "Course Name Not Found":
-                                                # Check if this is a duplicate based on title
                                                 is_duplicate = False
                                                 for existing in potential_courses:
                                                     if existing.get("title") == course_data.get("title"):
@@ -453,7 +436,7 @@ async def fetch_learning_resources(skill: str) -> List[Dict]:
                             except Exception as e:
                                 logger.error(f"Error processing course link: {e}")
                     
-                    # STRATEGY 4: Direct title extraction (if we still don't have enough courses)
+                    # Direct title extraction
                     if len(potential_courses) < 4:
                         course_titles = soup.find_all(['h2', 'h3', 'h4'], class_=lambda c: c and 'title' in c.lower() if c else False)
                         logger.info(f"Strategy 4: Found {len(course_titles)} course titles")
@@ -463,8 +446,7 @@ async def fetch_learning_resources(skill: str) -> List[Dict]:
                                 title_text = title_elem.get_text(strip=True)
                                 if not title_text or len(title_text) < 5 or len(title_text) > 150:
                                     continue
-                                    
-                                # Check if this title is already in our courses
+                              
                                 is_duplicate = False
                                 for existing in potential_courses:
                                     if existing.get("title") == title_text:
@@ -474,31 +456,29 @@ async def fetch_learning_resources(skill: str) -> List[Dict]:
                                 if is_duplicate:
                                     continue
                                     
-                                # Find the closest link
+                              
                                 link = None
-                                # Check siblings and parents for link
                                 for elem in list(title_elem.next_siblings) + list(title_elem.previous_siblings):
                                     if elem.name == 'a' and 'href' in elem.attrs:
                                         link = elem['href']
                                         break
                                 
-                                # Check parent's children for link
+                               
                                 if not link and title_elem.parent:
                                     for elem in title_elem.parent.find_all('a', href=True):
                                         link = elem['href']
                                         break
                                 
-                                # Format the URL
+                             
                                 if link:
                                     if link.startswith('/'):
                                         link = f"https://www.coursera.org{link}"
                                     elif not link.startswith(('http://', 'https://')):
                                         link = f"https://www.coursera.org/{link}"
                                 else:
-                                    # Create a search URL based on the title
                                     link = f"https://www.coursera.org/search?query={quote(title_text)}"
                                 
-                                # Get provider info if available
+                            
                                 provider = "Coursera"
                                 if title_elem.parent:
                                     provider_elems = title_elem.parent.find_all(['span', 'div', 'p'], 
@@ -509,26 +489,26 @@ async def fetch_learning_resources(skill: str) -> List[Dict]:
                                             provider = provider_text
                                             break
                                 
-                                # Create course entry
+
                                 course_data = {
                                     "title": title_text,
                                     "provider": f"Coursera - {provider}",
-                                    "level": "Intermediate",  # Default
-                                    "duration": "4-8 weeks",  # Default
+                                    "level": "Intermediate",  
+                                    "duration": "4-8 weeks", 
                                     "price": "Free audit available (Certificate: $49)",
                                     "url": link,
-                                    "rating": "4.5+",  # Default
+                                    "rating": "4.5+",  
                                 }
                                 
                                 potential_courses.append(course_data)
                                 
-                                # Stop if we have enough courses
+                                
                                 if len(potential_courses) >= 8:
                                     break
                             except Exception as e:
                                 logger.error(f"Error processing title element: {e}")
                     
-                    # STRATEGY 5: JSON data extraction - look for script tags with course data
+                    # JSON data extraction
                     if len(potential_courses) < 4:
                         script_tags = soup.find_all('script', type='application/json')
                         logger.info(f"Strategy 5: Found {len(script_tags)} JSON script tags")
@@ -539,17 +519,15 @@ async def fetch_learning_resources(skill: str) -> List[Dict]:
                                 if json_content:
                                     data = json.loads(json_content)
                                     
-                                    # Look for course data in JSON structure (could be in various formats)
-                                    # This requires exploring the actual JSON structure from Coursera
                                     course_data_found = False
                                     
-                                    # Pattern 1: Direct course list
+                                    # Direct course list
                                     if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
-                                        for item in data[:8]:  # Limit to 8 items
+                                        for item in data[:8]: 
                                             if "name" in item or "title" in item:
                                                 title = item.get("name", item.get("title", ""))
                                                 if title and len(title) > 5 and len(title) < 150:
-                                                    # Extract other fields
+                                                   
                                                     provider = "Coursera"
                                                     if "partner" in item or "university" in item or "provider" in item:
                                                         provider = item.get("partner", item.get("university", item.get("provider", "Coursera")))
@@ -558,7 +536,7 @@ async def fetch_learning_resources(skill: str) -> List[Dict]:
                                                     if "url" in item or "link" in item or "href" in item:
                                                         url = item.get("url", item.get("link", item.get("href", None)))
                                                         
-                                                    # Format URL
+                                                    
                                                     if url:
                                                         if url.startswith('/'):
                                                             url = f"https://www.coursera.org{url}"
@@ -571,7 +549,7 @@ async def fetch_learning_resources(skill: str) -> List[Dict]:
                                                     duration = item.get("duration", item.get("length", "4-8 weeks"))
                                                     rating = item.get("rating", item.get("stars", "4.5+"))
                                                     
-                                                    # Create course entry
+                                                   
                                                     course_data = {
                                                         "title": title,
                                                         "provider": f"Coursera - {provider}",
@@ -582,7 +560,7 @@ async def fetch_learning_resources(skill: str) -> List[Dict]:
                                                         "rating": rating,
                                                     }
                                                     
-                                                    # Check for duplicates
+                                                  
                                                     is_duplicate = False
                                                     for existing in potential_courses:
                                                         if existing.get("title") == title:
@@ -596,18 +574,16 @@ async def fetch_learning_resources(skill: str) -> List[Dict]:
                                                     if len(potential_courses) >= 8:
                                                         break
                                         
-                                    # Pattern 2: Nested course data
+                                    # Nested course data
                                     if not course_data_found and isinstance(data, dict):
-                                        # Look for common keys that might contain course data
+                                        
                                         for key in ["courses", "hits", "products", "results", "data", "items"]:
                                             if key in data and isinstance(data[key], list) and len(data[key]) > 0:
-                                                for item in data[key][:8]:  # Limit to 8 items
+                                                for item in data[key][:8]:  
                                                     if isinstance(item, dict) and ("name" in item or "title" in item):
                                                         title = item.get("name", item.get("title", ""))
                                                         if title and len(title) > 5 and len(title) < 150:
-                                                            # Create course entry following the same pattern as above
-                                                            # (Code would be similar to the block above)
-                                                            # This is omitted for brevity but would follow the same pattern
+                                                           
                                                             pass
                             except Exception as e:
                                 logger.error(f"Error processing JSON script tag: {e}")
@@ -621,8 +597,7 @@ async def fetch_learning_resources(skill: str) -> List[Dict]:
                         if title and title != "course name not found" and title not in seen_titles:
                             seen_titles.add(title)
                             filtered_courses.append(course)
-                            
-                            # Limit to 6 courses
+
                             if len(filtered_courses) >= 6:
                                 break
                     
@@ -637,7 +612,7 @@ async def fetch_learning_resources(skill: str) -> List[Dict]:
                     error_content = await response.text()
                     logger.error(f"Error response preview: {error_content[:500]}...")
         
-        # Fall back to alternative method if no courses found or request failed
+       
         if not courses:
             logger.info("Attempting to generate mock courses based on skill")
             mock_courses = generate_mock_courses_for_skill(skill)
@@ -648,7 +623,7 @@ async def fetch_learning_resources(skill: str) -> List[Dict]:
     
     except Exception as e:
         logger.error(f"Error in fetch_learning_resources: {e}")
-        # Fall back to mock data in case of any uncaught exception
+       
         mock_courses = generate_mock_courses_for_skill(skill)
         logger.info(f"Generated {len(mock_courses)} mock courses due to error")
         return mock_courses
@@ -662,28 +637,27 @@ async def solve_with_2captcha(site_key: str, page_url: str, api_key: str) -> Opt
         return None
     
     try:
-        # Create the solver instance
         solver = TwoCaptcha(api_key)
         
-        # Log the attempt
+       
         logger.info(f"Attempting to solve CAPTCHA: sitekey={site_key}, url={page_url}")
         
-        # The TwoCaptcha library is synchronous, so we need to run it in a separate thread
+       
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor() as executor:
             future = executor.submit(
                 solver.recaptcha, 
                 sitekey=site_key,
                 url=page_url,
-                invisible=1,  # Try invisible recaptcha first
+                invisible=1, 
                 action='search',
-                enterprise=0,  # Try standard recaptcha
-                version='v2'   # Specify v2 recaptcha
+                enterprise=0, 
+                version='v2'  
             )
             
             try:
-                # Wait for result with timeout
-                result = future.result(timeout=90)  # Increased timeout further
+               
+                result = future.result(timeout=90)  
                 if result and 'code' in result:
                     logger.info(f"2Captcha solution received: {result['code'][:10]}...")
                     return result['code']
@@ -700,23 +674,20 @@ async def solve_with_2captcha(site_key: str, page_url: str, api_key: str) -> Opt
 def extract_course_data(card) -> Dict:
     """Extract course data from card element with improved parsing for Coursera's structure"""
     try:
-        # --- Title extraction with multiple approaches ---
+        #Title extraction
         course_name = "Course Name Not Found"
-        
-        # Find any heading elements that might contain the title
         heading_tags = card.find_all(['h2', 'h3', 'h4', 'div', 'span'], 
                                      class_=lambda x: x and any(c in x.lower() for c in ['title', 'name', 'heading', 'card-title']) if x else False)
         
-        # Look for the course title (usually the first heading-like element with text)
         for tag in heading_tags:
             text = tag.get_text(strip=True)
-            if text and len(text) > 5 and len(text) < 150:  # Reasonable title length
+            if text and len(text) > 5 and len(text) < 150:  
                 course_name = text
                 break
                 
-        # If still not found, try finding the most prominent text element
+       
         if course_name == "Course Name Not Found":
-            # Look for any element with font-weight: bold or large text
+           
             prominent_elements = card.find_all(['div', 'span', 'p'], 
                                              style=lambda x: x and ('font-weight: 700' in x or 'font-weight:700' in x or 'font-size: 16' in x) if x else False)
             for elem in prominent_elements:
@@ -725,7 +696,6 @@ def extract_course_data(card) -> Dict:
                     course_name = text
                     break
         
-        # Last resort - find the first significant text in the card
         if course_name == "Course Name Not Found":
             for elem in card.find_all(['div', 'span', 'p']):
                 text = elem.get_text(strip=True)
@@ -733,7 +703,7 @@ def extract_course_data(card) -> Dict:
                     course_name = text
                     break
         
-        # --- URL extraction ---
+       
         course_link = None
         # Find the main link in the card
         links = card.find_all('a', href=True)
@@ -742,24 +712,20 @@ def extract_course_data(card) -> Dict:
             if href and ('/learn/' in href or '/professional-certificate/' in href or '/specialization/' in href):
                 course_link = href
                 break
-                
-        # If no specific course link found, use any link
+        
         if not course_link and links:
             course_link = links[0].get('href', '')
             
-        # Properly format the URL
         if course_link:
             if course_link.startswith('/'):
                 course_link = f"https://www.coursera.org{course_link}"
             elif not course_link.startswith(('http://', 'https://')):
                 course_link = f"https://www.coursera.org/{course_link}"
         else:
-            # Create a search URL based on the course name if no link found
             course_link = f"https://www.coursera.org/search?query={quote(course_name)}"
             
-        # --- Provider extraction ---
+      
         provider = "Coursera"
-        # Look for partner/university name (often a smaller text near logo or below title)
         partner_tags = card.find_all(['div', 'span', 'p'], 
                                     class_=lambda x: x and any(c in x.lower() for c in ['partner', 'provider', 'university', 'author', 'org']) if x else False)
         
@@ -769,21 +735,21 @@ def extract_course_data(card) -> Dict:
                 provider = text
                 break
                 
-        # --- Extract image if available ---
+       
         image_url = None
         img_tag = card.find('img')
         if img_tag and 'src' in img_tag.attrs:
             image_url = img_tag['src']
             
-        # --- Return structured data ---
+      
         return {
-            "title": course_name[:120],  # Limit title length
+            "title": course_name[:120],  
             "provider": f"Coursera - {provider}",
-            "level": "Intermediate",  # Default level
-            "duration": "4-8 weeks",  # Default duration
+            "level": "Intermediate",  
+            "duration": "4-8 weeks", 
             "price": "Free audit available (Certificate: $49)",
             "url": course_link,
-            "rating": "4.5+",  # Default rating
+            "rating": "4.5+",  
             "image": image_url
         }
     except Exception as e:
@@ -801,58 +767,56 @@ def extract_course_data(card) -> Dict:
 def extract_course_data(card) -> Dict:
     """Extract course data from card element with multiple fallback strategies"""
     try:
-        # --- Title extraction with fallbacks ---
+        # Title extraction
         course_name = "Course Name Not Found"
-        # Strategy 1: Look for h3 with specific classes
+        # Look for h3 with specific classes
         for class_fragment in ['title', 'name', 'heading', 'card-title']:
             title_elem = card.find(['h2', 'h3', 'h4'], class_=lambda x: x and class_fragment in x.lower() if x else False)
             if title_elem and title_elem.text.strip():
                 course_name = title_elem.text.strip()
                 break
                 
-        # Strategy 2: Just find any h3
+        # Just find any h3
         if course_name == "Course Name Not Found":
             title_elem = card.find(['h2', 'h3', 'h4'])
             if title_elem and title_elem.text.strip():
                 course_name = title_elem.text.strip()
                 
-        # Strategy 3: Look for any element with title-like classes
+        # Look for any element with title-like classes
         if course_name == "Course Name Not Found":
             title_elem = card.find(['div', 'span', 'p'], class_=lambda x: x and ('title' in x.lower() or 'name' in x.lower() or 'heading' in x.lower()) if x else False)
             if title_elem and title_elem.text.strip():
                 course_name = title_elem.text.strip()
                 
-        # --- URL extraction with fallbacks ---
+        # URL extraction
         course_link = None
-        # Strategy 1: Look for anchor with title-related classes
+        # Look for anchor with title-related classes
         link_elem = card.find('a', class_=lambda x: x and ('title' in x.lower() or 'name' in x.lower()) if x else False)
         if link_elem and 'href' in link_elem.attrs:
             course_link = link_elem['href']
             
-        # Strategy 2: Just find any anchor
+        # Just find any anchor
         if not course_link:
             link_elem = card.find('a', href=True)
             if link_elem:
                 course_link = link_elem['href']
-                
-        # Format the URL properly
+   
         if course_link:
             if course_link.startswith('/'):
                 course_link = f"https://www.coursera.org{course_link}"
             elif not course_link.startswith(('http://', 'https://')):
                 course_link = f"https://www.coursera.org/{course_link}"
         else:
-            # Create a search URL based on the course name if no link found
             course_link = f"https://www.coursera.org/search?query={quote(course_name)}"
             
-        # --- Provider extraction with fallbacks ---
+        # Provider extraction
         provider = "Coursera"
-        # Strategy 1: Look for specific partner classes
+        # Look for specific partner classes
         provider_elem = card.find(['p', 'span', 'div'], class_=lambda x: x and ('partner' in x.lower() or 'provider' in x.lower() or 'author' in x.lower()) if x else False)
         if provider_elem and provider_elem.text.strip():
             provider = provider_elem.text.strip()
             
-        # Strategy 2: Look for small text that might be provider
+        # Look for small text that might be provider
         if provider == "Coursera":
             small_elements = card.find_all(['small', 'span', 'div'], class_=lambda x: x and not ('title' in x.lower() if x else False))
             for elem in small_elements:
@@ -860,9 +824,8 @@ def extract_course_data(card) -> Dict:
                     provider = elem.text.strip()
                     break
                     
-        # --- Level extraction ---
-        level = "Intermediate"  # Default
-        # Check for text containing level indicators
+        # Level extraction
+        level = "Intermediate" 
         level_keywords = {
             "beginner": "Beginner",
             "novice": "Beginner",
@@ -880,12 +843,12 @@ def extract_course_data(card) -> Dict:
                         level = level_value
                         break
                         
-        # --- Duration extraction ---
+        # Duration extraction 
         duration = "4-6 weeks"  # Default
         duration_patterns = [
-            r'(\d+\s*-\s*\d+\s*\w+)',  # e.g., "1 - 3 Months"
-            r'(\d+\s*\w+\s*course)',   # e.g., "4 week course"
-            r'(\d+\s*\w+)'             # e.g., "4 Weeks"
+            r'(\d+\s*-\s*\d+\s*\w+)', 
+            r'(\d+\s*\w+\s*course)',   
+            r'(\d+\s*\w+)'            
         ]
         
         for elem in card.find_all(['span', 'div', 'p']):
@@ -896,9 +859,8 @@ def extract_course_data(card) -> Dict:
                         duration = match.group(1)
                         break
                         
-        # --- Rating extraction ---
+        # Rating extraction
         rating = "Not rated"
-        # Look for rating indicators (stars, numbers out of 5, etc.)
         rating_patterns = [
             r'(\d\.\d+)\s*stars',
             r'(\d\.\d+)\s*out of',
@@ -914,15 +876,15 @@ def extract_course_data(card) -> Dict:
                         rating = match.group(1)
                         break
                         
-        # --- Extract image URL if available ---
+        #Extract image URL
         image_url = None
         img_tag = card.find('img')
         if img_tag and 'src' in img_tag.attrs:
             image_url = img_tag['src']
             
-        # --- Assemble and return course data ---
+
         return {
-            "title": course_name[:120],  # Limit title length
+            "title": course_name[:120],  
             "provider": f"Coursera - {provider}",
             "level": level,
             "duration": duration,
@@ -933,7 +895,7 @@ def extract_course_data(card) -> Dict:
         }
     except Exception as e:
         logger.error(f"Error extracting course data: {e}")
-        # Return a minimal data object on error
+     
         return {
             "title": "Course Not Available",
             "provider": "Coursera",
@@ -948,7 +910,6 @@ def generate_mock_courses_for_skill(skill: str) -> List[Dict]:
     """Generate realistic mock courses for a skill when scraping fails"""
     logger.info(f"Generating mock courses for skill: {skill}")
     
-    # Predefined mock courses for common skills
     mock_courses = {
         "Software Development": [
             {
@@ -1050,13 +1011,13 @@ def generate_mock_courses_for_skill(skill: str) -> List[Dict]:
         ]
     }
     
-    # Check if we have predefined mock courses for this skill
+  
     for key, courses in mock_courses.items():
         if key.lower() in skill.lower():
             logger.info(f"Using predefined mock courses for {key}")
             return courses
     
-    # Otherwise generate generic courses for the skill
+   
     logger.info(f"Generating generic mock courses for {skill}")
     
     providers = [
@@ -1073,13 +1034,13 @@ def generate_mock_courses_for_skill(skill: str) -> List[Dict]:
     
     generic_courses = []
     
-    for i in range(1, 5):  # Generate 4 courses
+    for i in range(1, 5):  
         provider = random.choice(providers)
         level = random.choice(levels)
         duration = random.choice(durations)
         rating = f"{random.uniform(4.0, 4.9):.1f}"
         
-        # Generate appropriate titles based on the skill
+        
         titles = [
             f"{skill} Specialization",
             f"Professional Certificate in {skill}",
@@ -1093,7 +1054,7 @@ def generate_mock_courses_for_skill(skill: str) -> List[Dict]:
         
         title = random.choice(titles)
         
-        # Create slug for URL
+       
         slug = title.lower().replace(' ', '-').replace(':', '').replace('&', 'and')
         url = f"https://www.coursera.org/learn/{slug}"
         
@@ -1102,7 +1063,7 @@ def generate_mock_courses_for_skill(skill: str) -> List[Dict]:
         course_id = random.randint(1000, 9999)
         image = f"https://d3njjcbhbojbot.cloudfront.net/api/utilities/v1/imageproxy/https://s3.amazonaws.com/coursera-course-photos/{image_id}/course-{course_id}.jpg"
         
-        # Create the course object
+       
         course = {
             "title": title,
             "provider": provider,
@@ -1153,7 +1114,7 @@ async def analyze_cv_skills(cv_text: str, career_interests: List[str], career_go
         
         goals_text = "\n".join(goals_summary) if goals_summary else "No specific career goals provided"
         
-        # Limit CV text to avoid token limits
+       
         cv_text_limited = cv_text[:4000] + "..." if len(cv_text) > 4000 else cv_text
         
         prompt = (
@@ -1174,7 +1135,6 @@ async def analyze_cv_skills(cv_text: str, career_interests: List[str], career_go
             f"For the arrays (skills, strengths, improvements, future_skills), each item should be an object with 'name' and 'description' keys."
         )
         
-        # Call OpenAI with retry logic
         max_retries = 2
         response_text = None
         
@@ -1184,23 +1144,19 @@ async def analyze_cv_skills(cv_text: str, career_interests: List[str], career_go
                 break
             except Exception as api_err:
                 logger.error(f"OpenAI API error (attempt {attempt+1}/{max_retries}): {api_err}")
-                if attempt == max_retries - 1:  # Last attempt failed
+                if attempt == max_retries - 1: 
                     return create_cv_analysis_from_goals(career_interests, career_goals)
-                time.sleep(2)  # Wait before retry
+                time.sleep(2)  
         
         if not response_text:
             logger.error("Failed to get response from OpenAI")
             return create_cv_analysis_from_goals(career_interests, career_goals)
             
-        # Parse the response
+     
         try:
-            # Clean the response text
+         
             cleaned_response = clean_openai_json_response(response_text)
-            
-            # Parse the JSON
             analysis = json.loads(cleaned_response)
-            
-            # Ensure all required fields are present
             ensure_analysis_fields(analysis, career_interests, desired_role)
             
             return analysis
@@ -1209,23 +1165,23 @@ async def analyze_cv_skills(cv_text: str, career_interests: List[str], career_go
             logger.error(f"Response was: {response_text}")
             logger.error(f"Cleaned response: {cleaned_response}")
             
-            # Try to extract JSON directly
+         
             try:
-                # Look for anything that might be JSON in the response
+               
                 start_idx = response_text.find('{')
                 end_idx = response_text.rfind('}') + 1
                 if start_idx >= 0 and end_idx > start_idx:
                     json_str = response_text[start_idx:end_idx]
                     analysis = json.loads(json_str)
                     
-                    # Ensure all required fields are present
+                   
                     ensure_analysis_fields(analysis, career_interests, desired_role)
                     
                     return analysis
             except Exception as inner_e:
                 logger.error(f"Secondary JSON extraction failed: {inner_e}")
             
-            # If still failing, create a fallback response based on career goals
+            
             return create_cv_analysis_from_goals(career_interests, career_goals)
     
     except Exception as e:
@@ -1237,7 +1193,7 @@ def create_cv_analysis_from_goals(career_interests: List[str], career_goals: Dic
     """Create meaningful analysis based on career goals when CV is not readable."""
     interests_str = ", ".join(career_interests) if career_interests else "specified fields"
     
-    # Extract key information from career goals
+   
     desired_role = "professional role"
     short_term = ""
     long_term = ""
@@ -1253,7 +1209,6 @@ def create_cv_analysis_from_goals(career_interests: List[str], career_goals: Dic
         if career_goals.get("priorities"):
             priorities = career_goals["priorities"]
     
-    # Create custom summary based on provided information
     summary_parts = []
     summary_parts.append(f"The candidate is aiming for a career in {interests_str} with aspirations to become a {short_term or 'Senior Professional'} in the short term")
     
@@ -1269,7 +1224,6 @@ def create_cv_analysis_from_goals(career_interests: List[str], career_goals: Dic
     
     summary = "".join(summary_parts)
     
-    # Create future skills based on career interests
     future_skills = []
     
     if any("project" in interest.lower() for interest in career_interests):
@@ -1300,7 +1254,7 @@ def create_cv_analysis_from_goals(career_interests: List[str], career_goals: Dic
             "marketDemand": "Growing"
         })
     
-    # Add data analytics if no skills have been added yet
+    
     if not future_skills:
         future_skills.append({
             "name": "Data Analysis", 
@@ -1308,7 +1262,7 @@ def create_cv_analysis_from_goals(career_interests: List[str], career_goals: Dic
             "marketDemand": "Growing"
         })
     
-    # Ensure we have at least 3 skills
+   
     if len(future_skills) < 3:
         if not any(skill["name"] == "Communication Skills" for skill in future_skills):
             future_skills.append({
@@ -1324,7 +1278,6 @@ def create_cv_analysis_from_goals(career_interests: List[str], career_goals: Dic
                 "marketDemand": "Growing"
             })
     
-    # Create the analysis structure
     return {
         "summary": summary,
         "currentLevel": "Junior to Mid-level",
@@ -1398,7 +1351,6 @@ def generate_default_future_skills(career_interests: List[str]) -> List[Dict]:
         {"name": "Leadership", "reason": "Critical for senior positions", "marketDemand": "Always in demand"}
     ]
     
-    # Add industry-specific skills based on interests
     for interest in career_interests:
         interest_lower = interest.lower()
         
@@ -1415,10 +1367,8 @@ def generate_default_future_skills(career_interests: List[str]) -> List[Dict]:
         if "management" in interest_lower:
             default_skills.append({"name": "Strategic Planning", "reason": "Essential for management roles", "marketDemand": "High value in leadership positions"})
     
-    # Ensure we have at least 3 skills by adding common skills if needed
     default_skills.extend(common_skills)
     
-    # Return a unique list of skills (up to 5)
     unique_skills = []
     skill_names = set()
     for skill in default_skills:
@@ -1432,12 +1382,10 @@ def generate_default_future_skills(career_interests: List[str]) -> List[Dict]:
 def clean_openai_json_response(response_text: str) -> str:
     """Clean OpenAI JSON response by removing Markdown code blocks if present."""
     cleaned_response = response_text
-    
-    # Remove Markdown code block formatting if present
+
     if "```json" in response_text:
         cleaned_response = response_text.split("```json")[1].split("```")[0].strip()
     elif "```" in response_text:
-        # Find all code blocks and extract the one that looks like JSON
         code_blocks = response_text.split("```")
         for block in code_blocks:
             if block.strip() and (block.strip()[0] == '[' or block.strip()[0] == '{'):
@@ -1459,7 +1407,6 @@ async def generate_career_paths(
     logger.info(f"Generating career paths for interests: {career_interests}")
     
     try:
-        # Validate and extract skills from analysis with better type checking
         skills_list = []
         if isinstance(skills_analysis, dict) and "skills" in skills_analysis:
             if isinstance(skills_analysis["skills"], list):
@@ -1471,7 +1418,7 @@ async def generate_career_paths(
         
         skills_str = ", ".join(skills_list) if skills_list else "Not specified"
         
-        # Similar validation for strengths
+       
         strengths_list = []
         if isinstance(skills_analysis, dict) and "strengths" in skills_analysis:
             if isinstance(skills_analysis["strengths"], list):
@@ -1483,7 +1430,7 @@ async def generate_career_paths(
         
         strengths_str = ", ".join(strengths_list) if strengths_list else "Not specified"
         
-        # Format career goals with validation
+       
         goals_parts = []
         if isinstance(career_goals, dict):
             if career_goals.get("shortTerm"):
@@ -1499,8 +1446,7 @@ async def generate_career_paths(
                 goals_parts.append(f"Priorities: {priorities_str}")
         
         goals_str = "\n".join(goals_parts) if goals_parts else "No specific career goals provided"
-        
-        # Rest of the function stays the same
+
         prompt = (
             f"Based on this career profile, generate 2-3 viable career paths that align with their interests and skills.\n\n"
             f"Career Interests: {', '.join(career_interests)}\n"
@@ -1523,23 +1469,18 @@ async def generate_career_paths(
         
         # Call OpenAI
         response_text = call_openai(prompt)
-        
-        # Parse the response with robust error handling
+ 
         try:
-            # Clean the response text
+     
             cleaned_response = clean_openai_json_response(response_text)
-            
-            # Parse the JSON
             career_paths = json.loads(cleaned_response)
-            
-            # Validate that we got a list
+
             if not isinstance(career_paths, list):
                 logger.error(f"Expected list from OpenAI, got: {type(career_paths)}")
-                # Convert to list if we got a single object
+              
                 if isinstance(career_paths, dict):
                     career_paths = [career_paths]
                 else:
-                    # Create a default career path if we got something unexpected
                     career_paths = [{
                         "title": career_interests[0] if career_interests else "Software Developer",
                         "description": "A career path based on your interests and skills.",
@@ -1553,8 +1494,7 @@ async def generate_career_paths(
                         "growth": "Positive (10-15% annually)",
                         "timeToTransition": "3-6 months"
                     }]
-            
-            # Ensure proper structure for progression field
+
             for i, path in enumerate(career_paths):
                 if not isinstance(path, dict):
                     logger.warning(f"Career path at index {i} is not a dictionary: {path}")
@@ -1562,7 +1502,6 @@ async def generate_career_paths(
                     
                 if "progression" in path:
                     if not isinstance(path["progression"], list):
-                        # Convert to list if it's not already
                         if isinstance(path["progression"], str):
                             path["progression"] = [{"role": path["progression"], "years": "Varies"}]
                         else:
@@ -1570,13 +1509,13 @@ async def generate_career_paths(
                                                 {"role": "Mid Level", "years": "2-4 years"},
                                                 {"role": "Senior Level", "years": "4+ years"}]
                     else:
-                        # Check each item in the progression list
+                      
                         new_progression = []
                         for item in path["progression"]:
                             if isinstance(item, dict) and "role" in item and "years" in item:
                                 new_progression.append(item)
                             elif isinstance(item, str):
-                                # Parse string format like "Role Name (2-3 years)"
+                               
                                 parts = item.split("(")
                                 if len(parts) > 1:
                                     role = parts[0].strip()
@@ -1586,29 +1525,29 @@ async def generate_career_paths(
                                     years = "Varies"
                                 new_progression.append({"role": role, "years": years})
                             else:
-                                # Create a default item
+                                
                                 new_progression.append({"role": f"Career Stage {len(new_progression)+1}", 
                                                       "years": "Varies"})
                         path["progression"] = new_progression
                 else:
-                    # Create default progression if missing
+                  
                     path["progression"] = [
                         {"role": "Entry Level", "years": "1-2 years"},
                         {"role": "Mid Level", "years": "2-4 years"},
                         {"role": "Senior Level", "years": "4+ years"}
                     ]
             
-            # Add real market data if possible
+           
             enhanced_paths = []
             for path in career_paths:
                 if not isinstance(path, dict) or "title" not in path:
                     continue
                     
                 try:
-                    # Fetch real market data for the role
+                   
                     market_data = await fetch_job_market_data(path["title"])
                     
-                    # Enhance with real market data
+                    
                     if market_data and isinstance(market_data, dict):
                         if "salary_data" in market_data and isinstance(market_data["salary_data"], dict) and "median_salary" in market_data["salary_data"]:
                             path["salary"] = market_data["salary_data"]["median_salary"]
@@ -1616,7 +1555,7 @@ async def generate_career_paths(
                             path["growth"] = market_data["growth_rate"]
                 except Exception as market_err:
                     logger.error(f"Error fetching market data: {market_err}")
-                    # Keep the original AI-generated data
+                   
                 
                 enhanced_paths.append(path)
             
@@ -1626,9 +1565,8 @@ async def generate_career_paths(
             logger.error(f"Response was: {response_text}")
             logger.error(f"Cleaned response: {cleaned_response}")
             
-            # Try to extract JSON directly from the original response if possible
+           
             try:
-                # Look for anything that might be JSON in the response
                 start_idx = response_text.find('[')
                 end_idx = response_text.rfind(']') + 1
                 if start_idx >= 0 and end_idx > start_idx:
@@ -1638,7 +1576,6 @@ async def generate_career_paths(
             except:
                 pass
             
-            # If all else fails, return a default response
             return [{
                 "title": career_interests[0] if career_interests else "Software Developer",
                 "description": "A career path based on your interests and skills.",
@@ -1657,7 +1594,6 @@ async def generate_career_paths(
     
     except Exception as e:
         logger.error(f"Error in generate_career_paths: {e}")
-        # Return a fallback career path
         return [{
             "title": career_interests[0] if career_interests and career_interests[0] else "Software Developer",
             "description": "A career path based on your interests and skills.",
@@ -1704,18 +1640,16 @@ async def identify_skill_gaps(
             f"Return a JSON array where each object has these keys: skill, currentLevel, requiredLevel, priority, importance, learningPath"
         )
         
-        # Call OpenAI
+       
         response_text = call_openai(prompt)
         
-        # Parse the response
+      
         try:
-            # Clean the response text
+           
             cleaned_response = clean_openai_json_response(response_text)
-            
-            # Parse the JSON
+
             skill_gaps = json.loads(cleaned_response)
-            
-            # Validate the response and ensure it's a list of dictionaries
+
             if not isinstance(skill_gaps, list):
                 logger.warning(f"Expected list from identify_skill_gaps, got {type(skill_gaps)}")
                 if isinstance(skill_gaps, dict):
@@ -1723,7 +1657,7 @@ async def identify_skill_gaps(
                 else:
                     skill_gaps = []
             
-            # Enhance with learning resources if available
+            
             for i, gap in enumerate(skill_gaps):
                 if not isinstance(gap, dict):
                     logger.warning(f"Expected dict in skill_gaps, got {type(gap)}")
@@ -1738,7 +1672,6 @@ async def identify_skill_gaps(
                     continue
                 
                 try:
-                    # Add estimated time to acquire
                     current_level = gap.get("currentLevel", 0)
                     required_level = gap.get("requiredLevel", 0)
                     if isinstance(current_level, str):
@@ -1772,9 +1705,8 @@ async def identify_skill_gaps(
             logger.error(f"Response was: {response_text}")
             logger.error(f"Cleaned response: {cleaned_response}")
             
-            # Try to extract JSON directly
+           
             try:
-                # Look for anything that might be JSON in the response
                 start_idx = response_text.find('[')
                 end_idx = response_text.rfind(']') + 1
                 if start_idx >= 0 and end_idx > start_idx:
@@ -1784,7 +1716,6 @@ async def identify_skill_gaps(
             except:
                 pass
             
-            # If still failing, return an empty list
             logger.warning("Failed to parse skill gaps, returning empty list")
             return []
     
@@ -1800,7 +1731,6 @@ async def recommend_learning_resources(skill_gaps: List[Dict], career_interests:
     logger.info(f"Recommending learning resources for skill gaps and career interests: {career_interests}")
     
     try:
-        # Extract skills from gaps for targeted resource search
         high_priority_skills = []
         medium_priority_skills = []
         
@@ -1808,7 +1738,6 @@ async def recommend_learning_resources(skill_gaps: List[Dict], career_interests:
             high_priority_skills = [gap["skill"] for gap in skill_gaps if isinstance(gap, dict) and gap.get("priority") == "High"]
             medium_priority_skills = [gap["skill"] for gap in skill_gaps if isinstance(gap, dict) and gap.get("priority") == "Medium"]
         
-        # If no skill gaps were found, use career interests
         all_skills = high_priority_skills + medium_priority_skills
         
         if not all_skills and career_interests:
@@ -1816,29 +1745,26 @@ async def recommend_learning_resources(skill_gaps: List[Dict], career_interests:
         
         logger.info(f"Skills to search for resources: {all_skills}")
         
-        # Collect learning resources for all skills
+       
         courses = []
         certifications = []
         
-        # Generate learning paths based on skill gaps or career interests
         paths = []
         
-        # Create learning paths for high priority skills or career interests
+       
         priority_skills = high_priority_skills if high_priority_skills else career_interests
         
-        for idx, skill in enumerate(priority_skills[:3]):  # Limit to top 3 skills
-            # Create a learning path
+        for idx, skill in enumerate(priority_skills[:3]):  
             duration = random.choice(["2-3 months", "3-4 months", "4-6 months"])
             topics = [skill]
             
-            # Add related topics
+           
             related_topics = []
             for interest in career_interests:
-                # Don't add duplicates
                 if interest != skill:
                     related_topics.append(f"{skill} for {interest}")
             
-            # Add 1-2 random related topics if available
+           
             if related_topics:
                 topics.extend(random.sample(related_topics, min(2, len(related_topics))))
             
@@ -1846,7 +1772,7 @@ async def recommend_learning_resources(skill_gaps: List[Dict], career_interests:
             if career_interests:
                 path_description += f" for roles in {career_interests[0]}"
             
-            # Create path with URL
+  
             path_url = f"https://www.coursera.org/search?query={quote(skill)}+learning+path"
             
             paths.append({
@@ -1857,11 +1783,9 @@ async def recommend_learning_resources(skill_gaps: List[Dict], career_interests:
                 "url": path_url
             })
         
-        # Determine unique skills to search for courses
-        # Give priority to high priority skills and career interests
         search_skills = []
         
-        # Add skills in priority order, avoiding duplicates
+       
         for skill in high_priority_skills:
             if skill not in search_skills:
                 search_skills.append(skill)
@@ -1874,48 +1798,47 @@ async def recommend_learning_resources(skill_gaps: List[Dict], career_interests:
             if skill not in search_skills:
                 search_skills.append(skill)
         
-        # If still no skills, ensure we have at least some defaults
+       
         if not search_skills:
             search_skills = ["Professional Development"]
             
-        # Limit to top 5 skills to avoid too many API calls
+       
         search_skills = search_skills[:5]
         
-        # Track successful fetches to avoid redundant searches
+       
         searched_skills = set()
         successful_searches = 0
         
-        # Generate courses for skill gaps or career interests
+       
         for skill in search_skills:
-            # Skip if we already have enough courses or already searched this skill
+           
             if len(courses) >= 8 or skill.lower() in searched_skills or successful_searches >= 3:
                 continue
                 
             try:
-                # Mark this skill as searched
+               
                 searched_skills.add(skill.lower())
                 
-                # Fetch course recommendations
+               
                 logger.info(f"Fetching courses for skill: {skill}")
                 skill_courses = await fetch_learning_resources(skill)
                 
                 if skill_courses and len(skill_courses) > 0:
                     logger.info(f"Found {len(skill_courses)} courses for {skill}")
                     
-                    # Filter out low-quality or duplicate courses
+                   
                     filtered_courses = []
                     existing_titles = {course["title"].lower() for course in courses}
                     
                     for course in skill_courses:
-                        # Skip courses with missing titles or duplicates
+                       
                         if not course.get("title") or course["title"].lower() in existing_titles:
                             continue
                             
-                        # Add to filtered list and update existing titles
+                      
                         filtered_courses.append(course)
                         existing_titles.add(course["title"].lower())
                         
-                    # Add to courses list, limiting to 10 per skill
                     courses.extend(filtered_courses[:10])
                     successful_searches += 1
                     
@@ -1923,9 +1846,9 @@ async def recommend_learning_resources(skill_gaps: List[Dict], career_interests:
                     logger.warning(f"No courses found for skill: {skill}")
             except Exception as course_err:
                 logger.error(f"Error fetching courses for {skill}: {course_err}")
-                # Continue with next skill
+               
         
-        # Generate certifications based on career interests
+
         certification_options = {
             "software development": {
                 "name": "Professional Certificate in Software Development",
@@ -2009,15 +1932,15 @@ async def recommend_learning_resources(skill_gaps: List[Dict], career_interests:
                     certifications.append(cert)
                     break
         
-        # If no matches found, add a default certification based on first career interest
+        # default certification based on first career interest
         if not certifications and career_interests:
-            # Try to find a close match
+         
             interest_lower = career_interests[0].lower()
             best_match = None
             best_score = 0
             
             for key, cert in certification_options.items():
-                # Simple string matching score
+      
                 score = 0
                 for word in interest_lower.split():
                     if word in key:
@@ -2030,14 +1953,14 @@ async def recommend_learning_resources(skill_gaps: List[Dict], career_interests:
             if best_match:
                 certifications.append(best_match)
             else:
-                # Fall back to software development as default
+             
                 certifications.append(certification_options["software development"])
         
-        # Ensure we have at least one certification
+       
         if not certifications and "software development" in certification_options:
             certifications.append(certification_options["software development"])
         
-        # Remove duplicates from courses
+       
         unique_courses = []
         course_titles = set()
         
@@ -2047,7 +1970,7 @@ async def recommend_learning_resources(skill_gaps: List[Dict], career_interests:
                 course_titles.add(title)
                 unique_courses.append(course)
         
-        # Ensure we have at least one of each resource type
+       
         if not paths:
             interest = career_interests[0] if career_interests else 'Professional'
             paths = [{
@@ -2073,7 +1996,6 @@ async def recommend_learning_resources(skill_gaps: List[Dict], career_interests:
                 "image": "https://d3njjcbhbojbot.cloudfront.net/api/utilities/v1/imageproxy/https://s3.amazonaws.com/coursera-course-photos/default-course-image.jpg"
             }]
         
-        # Return structured learning resources
         result = {
             "paths": paths,
             "courses": unique_courses,
@@ -2085,7 +2007,6 @@ async def recommend_learning_resources(skill_gaps: List[Dict], career_interests:
     
     except Exception as e:
         logger.error(f"Error in recommend_learning_resources: {e}")
-        # Return default structure on error with URLs
         primary_interest = career_interests[0] if career_interests and len(career_interests) > 0 else "Professional Development"
         encoded_interest = quote(primary_interest)
         
@@ -2138,7 +2059,7 @@ async def create_action_plan(
     try:
         action_plan = []
         
-        # Step 1: Address high priority skill gaps
+        # Address high priority skill gaps
         if skill_gaps and isinstance(skill_gaps, list) and len(skill_gaps) > 0:
             high_priority_gaps = [gap for gap in skill_gaps if isinstance(gap, dict) and gap.get("priority") == "High"]
             if high_priority_gaps:
@@ -2155,7 +2076,7 @@ async def create_action_plan(
                     })
                     logger.info(f"Added action plan step for skill gaps: {gap_skills}")
         
-        # Step 2: Complete a learning path
+        # Complete a learning path
         if learning_resources and isinstance(learning_resources, dict) and "paths" in learning_resources:
             paths = learning_resources["paths"]
             if paths and isinstance(paths, list) and len(paths) > 0:
@@ -2177,7 +2098,7 @@ async def create_action_plan(
                     })
                     logger.info(f"Added action plan step for learning path: {path_title}")
         
-        # Step 3: Earn relevant certification
+        # Earn relevant certification
         if learning_resources and isinstance(learning_resources, dict) and "certifications" in learning_resources:
             certifications = learning_resources["certifications"]
             if certifications and isinstance(certifications, list) and len(certifications) > 0:
@@ -2194,7 +2115,7 @@ async def create_action_plan(
                     })
                     logger.info(f"Added action plan step for certification: {cert_name}")
         
-        # Step 4: Build portfolio projects
+        # Build portfolio projects
         action_plan.append({
             "title": "Build Portfolio Projects",
             "description": "Create 2-3 projects that demonstrate your newly acquired skills and align with your target career path",
@@ -2202,7 +2123,7 @@ async def create_action_plan(
         })
         logger.info("Added action plan step for portfolio projects")
         
-        # Step 5: Network and job search
+        # Network and job search
         if career_paths and isinstance(career_paths, list) and len(career_paths) > 0:
             path = career_paths[0]
             if isinstance(path, dict) and "title" in path:
@@ -2232,7 +2153,7 @@ async def create_action_plan(
     
     except Exception as e:
         logger.error(f"Error in create_action_plan: {e}")
-        # Return a basic action plan on error
+        
         default_plan = [
             {
                 "title": "Develop Key Skills",

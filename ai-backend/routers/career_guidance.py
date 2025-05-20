@@ -12,7 +12,6 @@ import jwt
 import motor.motor_asyncio
 from bson import ObjectId
 
-# Import shared utilities and connections
 from .interviewprep import (
     extract_text_from_document, 
     vision_client, 
@@ -22,7 +21,6 @@ from .interviewprep import (
     SECRET_KEY
 )
 
-# Import CV utilities
 from .cv_utils import (
     ensure_uploads_dir,
     generate_timestamp_id,
@@ -31,7 +29,6 @@ from .cv_utils import (
     find_cv_by_id
 )
 
-# Import career analysis functions
 from .career_analysis import (
     analyze_cv_skills,
     generate_career_paths,
@@ -40,15 +37,12 @@ from .career_analysis import (
     create_action_plan
 )
 
-# Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Configure environment variables
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://host.docker.internal:27017")
 logger.info(f"Using MongoDB URI for career guidance: {MONGODB_URI}")
 
-# Create router
 router = APIRouter()
 logger.info("Career Guidance Router created")
 
@@ -56,7 +50,7 @@ logger.info("Career Guidance Router created")
 try:
     client = motor.motor_asyncio.AsyncIOMotorClient(MONGODB_URI)
     db = client["futureforceai"]
-    career_analyses_col = db["career_analyses"]  # Collection for career analysis history
+    career_analyses_col = db["career_analyses"] 
     logger.info("MongoDB connection established for career guidance")
 except Exception as e:
     logger.error(f"Failed to connect to MongoDB for career guidance: {e}")
@@ -64,10 +58,8 @@ except Exception as e:
     db = None
     career_analyses_col = None
 
-# ------------------------------------------------------------------
-# Pydantic Models
-# ------------------------------------------------------------------
 
+# Pydantic Models
 class CareerGoals(BaseModel):
     shortTerm: Optional[str] = None
     longTerm: Optional[str] = None
@@ -160,22 +152,17 @@ class CareerGuidanceResponse(BaseModel):
     skill_gaps: List[SkillGap]
     learning_resources: Dict[str, Any]
 
-# ------------------------------------------------------------------
-# Helper Functions
-# ------------------------------------------------------------------
 
+# Helper Functions
 async def get_token_from_request(request: Request):
     """Extract token from request cookies, headers, or body"""
-    # Try to get token from cookies
+
     token = request.cookies.get("token")
-    
-    # Try Authorization header if no cookie
     if not token:
         auth_header = request.headers.get("Authorization", "")
         if auth_header and auth_header.startswith("Bearer "):
-            token = auth_header[7:]  # Remove 'Bearer ' prefix
+            token = auth_header[7:] 
     
-    # No valid token found
     if not token:
         return None
         
@@ -210,11 +197,11 @@ async def get_cv_text(cv_id: str, user_id: str) -> tuple[Optional[str], bool]:
             logger.warning(f"CV not found with ID: {cv_id} for user: {user_id}")
             return None, False
             
-        # First try to get extracted text
+        # get extracted text
         if "extractedText" in cv_document and cv_document["extractedText"] and len(cv_document["extractedText"].strip()) > 100:
             logger.info("Using 'extractedText' field from CV document")
             
-            # Check if the extracted text contains meaningful content
+           
             cv_text = cv_document["extractedText"]
             career_keywords = ["experience", "education", "skills", "work", "project", "job", "employment", "qualification"]
             contains_career_content = any(keyword in cv_text.lower() for keyword in career_keywords)
@@ -223,24 +210,21 @@ async def get_cv_text(cv_id: str, user_id: str) -> tuple[Optional[str], bool]:
                 return cv_text, True
             else:
                 logger.warning("CV text found but doesn't contain meaningful career content")
-                # Try to improve the extracted text using OpenAI
                 try:
                     prompt = (
                         "The following text was extracted from a CV/resume but may not contain proper career information. "
                         "If this contains any professional details like education, work experience, skills, or projects, "
                         "please format it properly. If it appears to be metadata or non-career content, indicate that this "
                         "doesn't contain meaningful career information.\n\n"
-                        f"{cv_text[:2000]}"  # Limit to 2000 chars to avoid token limits
+                        f"{cv_text[:2000]}"
                     )
                     
                     enhanced_text = call_openai(prompt)
                     
                     if "doesn't contain" in enhanced_text.lower() or "does not contain" in enhanced_text.lower():
-                        # OpenAI confirms it's not meaningful CV content
+                       
                         return cv_text, False
                     else:
-                        # OpenAI was able to extract/enhance some career information
-                        # Update the database with the enhanced text
                         await cv_collection.update_one(
                             {"_id": cv_document["_id"]},
                             {"$set": {"extractedText": enhanced_text, "lastUsed": datetime.utcnow()}}
@@ -251,27 +235,23 @@ async def get_cv_text(cv_id: str, user_id: str) -> tuple[Optional[str], bool]:
                     logger.error(f"Error enhancing CV text with OpenAI: {openai_err}")
                     return cv_text, False
             
-        # Try content field if extractedText not found or too short
         if "content" in cv_document and cv_document["content"] and len(cv_document["content"].strip()) > 100:
             logger.info("Using 'content' field from CV document")
             return cv_document["content"], True
             
-        # If still no usable text, try to extract from file
         if "filePath" in cv_document and cv_document["filePath"]:
             file_path = cv_document["filePath"]
             logger.info(f"Attempting to extract text from file: {file_path}")
             
             if os.path.exists(file_path):
                 try:
-                    # Extract text using the utility function
+                   
                     cv_text = extract_text_from_document(file_path, vision_client, openai_client)
                     
                     if cv_text and len(cv_text.strip()) > 100:
-                        # Check if the extracted text contains meaningful career content
                         career_keywords = ["experience", "education", "skills", "work", "project", "job", "employment", "qualification"]
                         contains_career_content = any(keyword in cv_text.lower() for keyword in career_keywords)
                         
-                        # Update the database with the extracted text
                         await cv_collection.update_one(
                             {"_id": cv_document["_id"]},
                             {"$set": {"extractedText": cv_text, "lastUsed": datetime.utcnow()}}
@@ -279,24 +259,20 @@ async def get_cv_text(cv_id: str, user_id: str) -> tuple[Optional[str], bool]:
                         logger.info(f"Successfully extracted and saved text from file: {len(cv_text)} chars")
                         
                         if not contains_career_content:
-                            # Try to improve the extracted text using OpenAI
                             try:
                                 prompt = (
                                     "The following text was extracted from a CV/resume but may not contain proper career information. "
                                     "If this contains any professional details like education, work experience, skills, or projects, "
                                     "please format it properly. If it appears to be metadata or non-career content, indicate that this "
                                     "doesn't contain meaningful career information.\n\n"
-                                    f"{cv_text[:2000]}"  # Limit to 2000 chars to avoid token limits
+                                    f"{cv_text[:2000]}"
                                 )
                                 
                                 enhanced_text = call_openai(prompt)
                                 
                                 if "doesn't contain" in enhanced_text.lower() or "does not contain" in enhanced_text.lower():
-                                    # OpenAI confirms it's not meaningful CV content
                                     return cv_text, False
                                 else:
-                                    # OpenAI was able to extract/enhance some career information
-                                    # Update the database with the enhanced text
                                     await cv_collection.update_one(
                                         {"_id": cv_document["_id"]},
                                         {"$set": {"extractedText": enhanced_text, "lastUsed": datetime.utcnow()}}
@@ -314,8 +290,7 @@ async def get_cv_text(cv_id: str, user_id: str) -> tuple[Optional[str], bool]:
                 except Exception as e:
                     logger.error(f"Error extracting text from file: {e}")
                     return f"Error extracting text from CV file: {str(e)}", False
-        
-        # As a final fallback, check for any text fields that might contain CV data
+
         for field in ["rawText", "text", "data", "parsedContent"]:
             if field in cv_document and cv_document[field] and len(str(cv_document[field]).strip()) > 100:
                 logger.info(f"Using '{field}' field from CV document")
@@ -323,8 +298,7 @@ async def get_cv_text(cv_id: str, user_id: str) -> tuple[Optional[str], bool]:
                 career_keywords = ["experience", "education", "skills", "work", "project", "job", "employment", "qualification"]
                 contains_career_content = any(keyword in text.lower() for keyword in career_keywords)
                 return text, contains_career_content
-        
-        # If we have a PDF or image-based file but couldn't extract meaningful text, try directly with OpenAI Vision API
+
         if "filePath" in cv_document and cv_document["filePath"] and (
             cv_document.get("contentType", "").lower().startswith("application/pdf") or
             cv_document.get("contentType", "").lower().startswith("image/")
@@ -336,14 +310,12 @@ async def get_cv_text(cv_id: str, user_id: str) -> tuple[Optional[str], bool]:
                 logger.info(f"Attempting direct OpenAI Vision analysis for: {file_path}")
                 
                 if os.path.exists(file_path) and openai_client:
-                    # Read the file
+                
                     with open(file_path, "rb") as file:
                         file_data = file.read()
-                    
-                    # Create a base64 encoded version of the file
+                
                     file_b64 = base64.b64encode(file_data).decode('utf-8')
-                    
-                    # Determine content type
+    
                     content_type = cv_document.get("contentType", "application/pdf")
                     
                     # Call OpenAI Vision API
@@ -369,11 +341,9 @@ async def get_cv_text(cv_id: str, user_id: str) -> tuple[Optional[str], bool]:
                     vision_text = response.choices[0].message.content
                     
                     if "isn't a CV" in vision_text.lower() or "doesn't contain" in vision_text.lower() or "does not contain" in vision_text.lower():
-                        # OpenAI confirms it's not a CV
                         logger.warning("OpenAI Vision API confirms this isn't a CV or doesn't contain career information")
                         return "The document you uploaded doesn't appear to be a CV or doesn't contain career information. Please upload a document with your professional details.", False
                     
-                    # Update the database with the extracted text
                     await cv_collection.update_one(
                         {"_id": cv_document["_id"]},
                         {"$set": {"extractedText": vision_text, "lastUsed": datetime.utcnow()}}
@@ -390,9 +360,7 @@ async def get_cv_text(cv_id: str, user_id: str) -> tuple[Optional[str], bool]:
         logger.error(f"Error retrieving CV text: {e}")
         return f"Error processing CV: {str(e)}", False
 
-# ------------------------------------------------------------------
 # API Routes
-# ------------------------------------------------------------------
 
 @router.post("/upload-cv")
 async def upload_cv(
@@ -402,7 +370,7 @@ async def upload_cv(
     """Upload a CV for career analysis with improved error handling."""
     logger.info(f"Uploading CV: {cv_file.filename}")
     
-    # Get token from request
+   
     token = await get_token_from_request(request)
     if not token:
         logger.warning("No authentication token found")
@@ -411,7 +379,7 @@ async def upload_cv(
             content={"detail": "Authentication required"}
         )
     
-    # Verify token
+   
     user_id = await verify_token(token)
     if not user_id:
         return JSONResponse(
@@ -420,16 +388,13 @@ async def upload_cv(
         )
     
     try:
-        # Ensure uploads directory exists
+       
         uploads_dir = ensure_uploads_dir()
-        
-        # Generate a unique filename
         file_id = generate_timestamp_id()
         clean_filename_str = clean_filename(cv_file.filename or "uploaded_cv.pdf")
         filename = f"{file_id}_{clean_filename_str}"
         file_path = os.path.join(uploads_dir, filename)
         
-        # Save file to disk with proper error handling
         try:
             content = await cv_file.read()
             if not content or len(content) < 100:
@@ -440,8 +405,7 @@ async def upload_cv(
                 
             with open(file_path, "wb") as f:
                 f.write(content)
-                
-            # Reset file pointer
+
             await cv_file.seek(0)
             
             logger.info(f"CV file saved to: {file_path}")
@@ -452,7 +416,6 @@ async def upload_cv(
                 content={"detail": "Failed to save uploaded file"}
             )
         
-        # Extract text from CV with timeout protection
         try:
             cv_text = extract_text_from_document(file_path, vision_client, openai_client)
             if not cv_text or len(cv_text.strip()) < 100:
@@ -466,8 +429,7 @@ async def upload_cv(
                 status_code=500,
                 content={"detail": "Failed to process CV content. Please try a different file format."}
             )
-        
-        # Save to database for future use
+
         try:
             cv_collection = db.get_collection("cvs")
             if cv_collection is not None:
@@ -500,7 +462,6 @@ async def upload_cv(
                 content={"detail": f"Database error: {str(db_err)}"}
             )
             
-        # Return CV ID
         return {
             "cv_id": cv_id,
             "filename": cv_file.filename,
@@ -524,7 +485,6 @@ async def analyze_career_path(
     """
     logger.info(f"Analyzing career path for interests: {data.career_interests}")
     
-    # Get token from request
     token = await get_token_from_request(request)
     if not token:
         logger.warning("No authentication token found")
@@ -533,31 +493,25 @@ async def analyze_career_path(
             content={"detail": "Authentication required"}
         )
     
-    # Verify token
     user_id = await verify_token(token)
     if not user_id:
         return JSONResponse(
             status_code=401,
             content={"detail": "Invalid authentication token"}
         )
-    
-    # Get CV text - might be None or limited text if extraction failed
+
     cv_text_result = await get_cv_text(data.cv_id, user_id)
-    cv_text = cv_text_result[0]  # Extract text from tuple
-    cv_extractable = cv_text_result[1]  # Extract extractable flag from tuple
+    cv_text = cv_text_result[0]  
+    cv_extractable = cv_text_result[1]  
     
     try:
-        # Process career goals
         career_goals = data.career_goals.dict() if data.career_goals else {}
         
-        # Check if CV text is sufficient for analysis - this additional check is redundant but keeping for safety
         if cv_text and not cv_extractable:
             cv_extractable = len(cv_text.strip()) >= 100 and any(keyword in cv_text.lower() for keyword in 
                 ["experience", "education", "skills", "work", "project", "job", "employment", "qualification"])
-        
-        # Analyze CV and generate career guidance with proper error handling
+
         try:
-            # If CV is not extractable, create a fallback analysis
             if not cv_extractable:
                 logger.warning("CV text is insufficient for detailed analysis")
                 skills_analysis = {
@@ -578,7 +532,6 @@ async def analyze_career_path(
                     ]
                 }
             else:
-                # Normal analysis with extractable CV
                 skills_analysis = await analyze_cv_skills(cv_text, data.career_interests, career_goals)
                 
             if not skills_analysis:
@@ -665,7 +618,7 @@ async def analyze_career_path(
             except Exception as db_err:
                 logger.error(f"Error saving analysis to database: {db_err}")
         
-        # Return comprehensive career guidance
+        # Return career guidance data
         result = {
             "analysis": {
                 "summary": skills_analysis.get("summary", "Based on your CV and career interests, we've analyzed potential career paths for you."),
@@ -699,15 +652,13 @@ async def analyze_career_path(
             "skill_gaps": skill_gaps,
             "learning_resources": learning_resources
         }
-        
-        # If CV wasn't extractable but we don't have improvements yet, add one about providing an extractable CV
+
         if not cv_extractable and not result["analysis"]["improvements"]:
             result["analysis"]["improvements"] = [
                 {"title": "Provide extractable CV", 
                  "description": "Upload a CV in a format that allows text extraction for better analysis"}
             ]
         
-        # Validate the final data structure to ensure no None values
         result = remove_none_values(result)
         
         logger.info(f"Returning career analysis result with {len(result)} top-level keys")
@@ -727,7 +678,7 @@ def extract_text_from_document(file_path: str, vision_client=None, openai_client
     """
     extracted_text = ""
     
-    # Method 1: Try PyPDF2
+    # Try PyPDF2
     try:
         import PyPDF2
         with open(file_path, "rb") as file:
@@ -739,13 +690,11 @@ def extract_text_from_document(file_path: str, vision_client=None, openai_client
             
             if pdf_text and len(pdf_text.strip()) >= 100:
                 return pdf_text
-            
-            # If we didn't get good text, store what we have
             extracted_text = pdf_text
     except Exception as e:
         logging.error(f"PyPDF2 extraction error: {e}")
     
-    # Method 2: Try pdfplumber
+    # Try pdfplumber
     try:
         import pdfplumber
         with pdfplumber.open(file_path) as pdf:
@@ -756,68 +705,60 @@ def extract_text_from_document(file_path: str, vision_client=None, openai_client
             
             if plumber_text and len(plumber_text.strip()) >= 100:
                 return plumber_text
-            
-            # If better than what we have, update
+
             if len(plumber_text) > len(extracted_text):
                 extracted_text = plumber_text
     except Exception as e:
         logging.error(f"pdfplumber extraction error: {e}")
     
-    # Method 3: Try pytesseract for OCR if it's installed
+    # Try pytesseract for OCR 
     try:
         from PIL import Image
         import pytesseract
         import pdf2image
         
         ocr_text = ""
-        # Convert PDF to images
         images = pdf2image.convert_from_path(file_path)
-        
-        # Process each image with OCR
+
         for image in images:
             page_text = pytesseract.image_to_string(image)
             ocr_text += page_text
         
         if ocr_text and len(ocr_text.strip()) >= 100:
             return ocr_text
-        
-        # If better than what we have, update
+
         if len(ocr_text) > len(extracted_text):
             extracted_text = ocr_text
     except Exception as e:
         logging.error(f"OCR extraction error: {e}")
     
-    # Method 4: Use Google Vision API if available
+    # Use Google Vision API 
     if vision_client:
         try:
-            # Open the file and convert to bytes
+        
             with open(file_path, "rb") as file:
                 content = file.read()
-            
-            # Create an image object
+          
             image = vision_client.types.Image(content=content)
             
-            # Perform text detection
             response = vision_client.text_detection(image=image)
-            
-            # Extract text from response
+        
             vision_text = response.text_annotations[0].description if response.text_annotations else ""
             
             if vision_text and len(vision_text.strip()) >= 100:
                 return vision_text
-            
-            # If better than what we have, update
+
             if len(vision_text) > len(extracted_text):
                 extracted_text = vision_text
         except Exception as e:
             logging.error(f"Vision API extraction error: {e}")
     
-    # Method 5: Use OpenAI if available (as a last resort due to cost)
+    # Use OpenAI
     if openai_client and len(extracted_text.strip()) < 100:
         try:
-            # Prepare the file for OpenAI
+            
             with open(file_path, "rb") as file:
-                # Create a form to send to OpenAI
+                
                 response = openai_client.chat.completions.create(
                     model="gpt-4-vision-preview",
                     messages=[
@@ -842,13 +783,12 @@ def extract_text_from_document(file_path: str, vision_client=None, openai_client
                 if openai_text and len(openai_text.strip()) >= 100:
                     return openai_text
                 
-                # If better than what we have, update
+               
                 if len(openai_text) > len(extracted_text):
                     extracted_text = openai_text
         except Exception as e:
             logging.error(f"OpenAI extraction error: {e}")
     
-    # Return whatever text we managed to extract, even if it's not great
     return extracted_text
 
 def remove_none_values(data):

@@ -1,4 +1,4 @@
-// frontend/models/User.js
+
 import mongoose from 'mongoose';
 
 const UserSchema = new mongoose.Schema({
@@ -10,5 +10,5 @@ const UserSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
 });
 
-// Use existing model if it exists (helps during hot-reload)
+
 export default mongoose.models.User || mongoose.model('User', UserSchema);

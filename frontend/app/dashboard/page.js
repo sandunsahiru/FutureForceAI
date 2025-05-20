@@ -12,20 +12,51 @@ import Image from 'next/image';
 
 export default function Dashboard() {
   const [activeTool, setActiveTool] = useState(null);
-  const [user, setUser] = useState(null);
+  const [userData, setUserData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [isSidebarOpen, setSidebarOpen] = useState(true);
   const [isDropdownOpen, setDropdownOpen] = useState(false);
   const dropdownRef = useRef(null);
 
   useEffect(() => {
-    // Fetch user data
-    fetch('/api/auth/user')
-      .then(res => res.json())
-      .then(data => {
-        console.log('User data:', data); // Debug log
-        setUser(data);
-      })
-      .catch(err => console.error('Error fetching user:', err));
+    // Fetch authenticated user data
+    const fetchUserData = async () => {
+      try {
+        // First verify authentication
+        const authResponse = await fetch('/api/auth/check', {
+          method: 'GET',
+          credentials: 'include',
+        });
+        
+        if (!authResponse.ok) {
+          // Redirect to login if not authenticated
+          window.location.href = '/login';
+          return;
+        }
+        
+        // Fetch user profile data
+        const profileResponse = await fetch('/api/users/profile', {
+          method: 'GET',
+          credentials: 'include',
+        });
+        
+        if (!profileResponse.ok) {
+          throw new Error('Failed to fetch user profile');
+        }
+        
+        const userData = await profileResponse.json();
+        console.log('User data:', userData); // Debug log
+        setUserData(userData);
+      } catch (err) {
+        console.error('Error fetching user data:', err);
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    };
+    
+    fetchUserData();
   }, []);
 
   // Close dropdown when clicking outside
@@ -41,6 +72,16 @@ export default function Dashboard() {
       document.removeEventListener('mousedown', handleClickOutside);
     };
   }, []);
+
+  // Handle logout directly without using Link component
+  const handleLogout = async () => {
+    try {
+      // Direct browser navigation to logout endpoint
+      window.location.href = '/api/logout';
+    } catch (error) {
+      console.error('Error during logout:', error);
+    }
+  };
 
   const tools = [
     {
@@ -120,13 +161,35 @@ export default function Dashboard() {
     return colors[color] || colors.purple;
   };
 
-  // Get username from user object
+  // Get username from user data
   const getUsername = () => {
-    if (user?.firstName) return user.firstName;
-    if (user?.name) return user.name.split(' ')[0];
-    if (user?.email) return user.email.split('@')[0];
+    if (!userData) return 'User';
+    
+    // Use fullName from the User model
+    if (userData.fullName) {
+      // Get first name from full name
+      return userData.fullName.split(' ')[0];
+    }
+    
+    // Fallback to email if name is not available
+    if (userData.email) {
+      return userData.email.split('@')[0];
+    }
+    
     return 'User';
   };
+
+  // Show loading state while fetching user data
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-purple-500 mx-auto"></div>
+          <p className="mt-3 text-gray-600">Loading dashboard...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 flex flex-col">
@@ -135,9 +198,9 @@ export default function Dashboard() {
         <div className="px-4 sm:px-6 lg:px-8">
           <div className="flex h-16 items-center justify-between">
             <div className="flex items-center">
-              <h1 className="text-2xl font-bold bg-gradient-to-r from-purple-600 to-blue-600 bg-clip-text text-transparent">
+              <Link href="/" className="text-2xl font-bold bg-gradient-to-r from-purple-600 to-blue-600 bg-clip-text text-transparent">
                 FutureForceAI
-              </h1>
+              </Link>
             </div>
             
             <div className="flex items-center gap-x-4">
@@ -164,14 +227,16 @@ export default function Dashboard() {
                       <User className="w-4 h-4 mr-3" />
                       Profile
                     </Link>
-                    <Link
-                      href="/api/logout"
-                      className="flex items-center px-4 py-2 text-sm text-gray-700 hover:bg-purple-50"
-                      onClick={() => setDropdownOpen(false)}
+                    <button
+                      onClick={() => {
+                        setDropdownOpen(false);
+                        handleLogout();
+                      }}
+                      className="flex items-center px-4 py-2 text-sm text-gray-700 hover:bg-purple-50 w-full text-left"
                     >
                       <LogOut className="w-4 h-4 mr-3" />
                       Logout
-                    </Link>
+                    </button>
                   </div>
                 )}
               </div>
@@ -263,15 +328,15 @@ export default function Dashboard() {
                     <User className="w-5 h-5 text-gray-500 flex-shrink-0" />
                     {isSidebarOpen && <span className="ml-3">Profile</span>}
                   </Link>
-                  <Link
-                    href="/api/logout"
-                    className={`flex items-center ${
+                  <button
+                    onClick={handleLogout}
+                    className={`flex items-center w-full ${
                       isSidebarOpen ? 'px-3' : 'justify-center'
-                    } py-3 rounded-lg text-gray-700 hover:bg-purple-50`}
+                    } py-3 rounded-lg text-gray-700 hover:bg-purple-50 text-left`}
                   >
                     <LogOut className="w-5 h-5 text-gray-500 flex-shrink-0" />
                     {isSidebarOpen && <span className="ml-3">Logout</span>}
-                  </Link>
+                  </button>
                 </div>
               </div>
             </div>

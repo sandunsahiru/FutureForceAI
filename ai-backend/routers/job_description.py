@@ -7,15 +7,12 @@ from typing import List, Dict, Any, Optional, Union
 from datetime import datetime
 import json
 import re
-
+import jwt
+import motor.motor_asyncio
 from fastapi import APIRouter, File, UploadFile, Form, HTTPException, status, Request, Body, Header, Query
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
-import jwt
-import motor.motor_asyncio
 from bson import ObjectId
-
-# Import shared utilities and connections
 from .interviewprep import (
     extract_text_from_document, 
     vision_client, 
@@ -25,7 +22,6 @@ from .interviewprep import (
     SECRET_KEY
 )
 
-# Import CV utilities
 from .cv_utils import (
     ensure_uploads_dir,
     generate_timestamp_id,
@@ -34,15 +30,13 @@ from .cv_utils import (
     find_cv_by_id
 )
 
-# Set up logging
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# Configure environment variables
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://host.docker.internal:27017")
 logger.info(f"Using MongoDB URI for job description research: {MONGODB_URI}")
 
-# Try to import web scraping libraries
+# import web scraping libraries
 try:
     import requests
     import bs4
@@ -52,7 +46,7 @@ except ImportError:
     logger.warning("Web scraping libraries (requests, BeautifulSoup) not installed")
     SCRAPING_AVAILABLE = False
 
-# Try to import PDF generation libraries
+# import PDF generation libraries
 try:
     from reportlab.lib.pagesizes import letter
     from reportlab.lib import colors
@@ -64,7 +58,6 @@ except ImportError:
     logger.warning("PDF generation libraries (reportlab) not installed")
     PDF_GEN_AVAILABLE = False
 
-# Create router
 router = APIRouter()
 logger.info("Job Description Research Router created")
 
@@ -72,7 +65,7 @@ logger.info("Job Description Research Router created")
 try:
     client = motor.motor_asyncio.AsyncIOMotorClient(MONGODB_URI)
     db = client["futureforceai"]
-    job_searches_col = db["job_searches"]  # Collection for job search history
+    job_searches_col = db["job_searches"]
     logger.info("MongoDB connection established for job description research")
 except Exception as e:
     logger.error(f"Failed to connect to MongoDB for job description: {e}")
@@ -80,9 +73,8 @@ except Exception as e:
     db = None
     job_searches_col = None
 
-# ------------------------------------------------------------------
+
 # Pydantic Models
-# ------------------------------------------------------------------
 
 class SuggestRolesRequest(BaseModel):
     cv_id: str
@@ -112,22 +104,18 @@ class PDFGenerationRequest(BaseModel):
     job_role: str
     job_data: JobDescriptionData
 
-# ------------------------------------------------------------------
+
 # Helper Functions
-# ------------------------------------------------------------------
 
 async def get_token_from_request(request: Request):
     """Extract token from request cookies, headers, or body"""
-    # Try to get token from cookies
     token = request.cookies.get("token")
     
-    # Try Authorization header if no cookie
     if not token:
         auth_header = request.headers.get("Authorization", "")
         if auth_header and auth_header.startswith("Bearer "):
-            token = auth_header[7:]  # Remove 'Bearer ' prefix
+            token = auth_header[7:] 
     
-    # No valid token found
     if not token:
         return None
         
@@ -148,38 +136,30 @@ async def verify_token(token: str) -> Optional[str]:
 
 async def get_cv_text(cv_id: str, user_id: str) -> Optional[str]:
     """Get CV text from MongoDB by ID with improved error handling"""
-    if db is None:  # Changed from "if db:"
+    if db is None: 
         logger.error("MongoDB not connected")
         return None
     
     try:
-        # Try to find the CV document
         cv_document = await find_cv_by_id(db, cv_id, user_id)
         
         if not cv_document:
             logger.warning(f"CV not found: {cv_id}")
             return None
-        
-        # Get CV text from document using different possible field names
         cv_text = None
         
-        # First check extracted text field
         if 'extractedText' in cv_document and cv_document['extractedText']:
             logger.info("Using 'extractedText' field from CV document")
             cv_text = cv_document['extractedText']
             
-        # Try content field if extractedText not found
         if not cv_text and 'content' in cv_document and cv_document['content']:
             logger.info("Using 'content' field from CV document")
             cv_text = cv_document['content']
         
-        # If still no text, try extracting from file
         if not cv_text or len(cv_text.strip()) < 100:
-            # Get potential file paths
             potential_paths = get_potential_file_paths(cv_document)
             logger.info(f"Trying potential file paths: {potential_paths}")
             
-            # Try each path
             for path in potential_paths:
                 if os.path.exists(path):
                     logger.info(f"Found file at path: {path}")
@@ -188,7 +168,6 @@ async def get_cv_text(cv_id: str, user_id: str) -> Optional[str]:
                         if cv_text and len(cv_text.strip()) >= 100:
                             logger.info(f"Successfully extracted {len(cv_text)} chars from file")
                             
-                            # Update database with extracted text
                             cv_collection = db.get_collection("cvs")
                             await cv_collection.update_one(
                                 {"_id": cv_document["_id"]},
@@ -201,9 +180,7 @@ async def get_cv_text(cv_id: str, user_id: str) -> Optional[str]:
                             break
                     except Exception as e:
                         logger.error(f"Error extracting text from file: {e}")
-                        # Continue trying other paths instead of failing completely
-        
-        # If we still don't have usable CV text, return None
+
         if not cv_text or len(cv_text.strip()) < 100:
             logger.error(f"Could not extract sufficient content from CV")
             return None
@@ -225,7 +202,6 @@ def scrape_job_listings(job_role: str, num_listings: int = 5) -> List[str]:
     job_descriptions = []
     
     try:
-        # Setup user agents for realistic browsing
         user_agents = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
@@ -233,8 +209,7 @@ def scrape_job_listings(job_role: str, num_listings: int = 5) -> List[str]:
         ]
         
         logger.info(f"Starting job scraping for role: {job_role}")
-        
-        # Scrape from Indeed with enhanced error handling
+
         try:
             indeed_descriptions = scrape_indeed_jobs(job_role, num_listings, user_agents)
             if indeed_descriptions:
@@ -245,7 +220,6 @@ def scrape_job_listings(job_role: str, num_listings: int = 5) -> List[str]:
         except Exception as indeed_err:
             logger.error(f"Indeed scraping failed: {indeed_err}")
         
-        # Scrape from Glassdoor with enhanced error handling
         try:
             glassdoor_descriptions = scrape_glassdoor_jobs(job_role, num_listings, user_agents)
             if glassdoor_descriptions:
@@ -261,7 +235,6 @@ def scrape_job_listings(job_role: str, num_listings: int = 5) -> List[str]:
     except Exception as e:
         logger.error(f"Error during job scraping: {e}")
     
-    # If no data from scraping, generate with AI
     if not job_descriptions:
         logger.info(f"No job descriptions found through scraping. Generating with AI for: {job_role}")
         try:
@@ -287,13 +260,12 @@ def scrape_indeed_jobs(job_role: str, num_listings: int, user_agents: List[str])
     job_descriptions = []
     
     try:
-        # Prepare search URL
         search_term = job_role.lower().replace(" ", "+")
         url = f"https://www.indeed.com/jobs?q={search_term}"
         
         logger.info(f"Attempting to scrape Indeed at: {url}")
         
-        # Setup headers
+
         headers = {
             "User-Agent": random.choice(user_agents),
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
@@ -304,10 +276,8 @@ def scrape_indeed_jobs(job_role: str, num_listings: int, user_agents: List[str])
             "Upgrade-Insecure-Requests": "1",
         }
         
-        # Session for maintaining cookies
+    
         session = requests.Session()
-        
-        # Make request
         response = session.get(url, headers=headers, timeout=15, allow_redirects=True)
         
         logger.info(f"Indeed response status: {response.status_code}")
@@ -316,12 +286,11 @@ def scrape_indeed_jobs(job_role: str, num_listings: int, user_agents: List[str])
         if response.status_code == 403:
             logger.warning("Indeed returned 403 Forbidden - checking for CAPTCHA or blocks")
             
-            # Save the response for debugging
             with open('/tmp/indeed_403_response.html', 'w', encoding='utf-8') as f:
                 f.write(response.text)
             logger.info("Saved 403 response to /tmp/indeed_403_response.html for debugging")
             
-            # More comprehensive CAPTCHA detection
+            # CAPTCHA detection
             captcha_indicators = [
                 "captcha",
                 "recaptcha",
@@ -337,8 +306,6 @@ def scrape_indeed_jobs(job_role: str, num_listings: int, user_agents: List[str])
             
             response_text_lower = response.text.lower()
             captcha_detected = any(indicator in response_text_lower for indicator in captcha_indicators)
-            
-            # Log what we found in the response
             logger.info(f"Response preview (first 500 chars): {response.text[:500]}")
             
             if captcha_detected:
@@ -356,9 +323,6 @@ def scrape_indeed_jobs(job_role: str, num_listings: int, user_agents: List[str])
                     captcha_token = handle_captcha_challenge(response.url, headers, site_key=site_key)
                     if captcha_token:
                         logger.info("CAPTCHA solved successfully, retrying request")
-                        
-                        # Submit the CAPTCHA solution
-                        # First, try to find the form action URL
                         soup = BeautifulSoup(response.text, 'html.parser')
                         form = soup.find('form', {'id': 'challenge-form'}) or soup.find('form')
                         
@@ -372,7 +336,7 @@ def scrape_indeed_jobs(job_role: str, num_listings: int, user_agents: List[str])
                         # Submit CAPTCHA solution
                         captcha_data = {
                             'g-recaptcha-response': captcha_token,
-                            'h-captcha-response': captcha_token,  # In case it's hCaptcha
+                            'h-captcha-response': captcha_token, 
                         }
                         
                         captcha_response = session.post(action_url, data=captcha_data, headers=headers, allow_redirects=True)
@@ -397,13 +361,12 @@ def scrape_indeed_jobs(job_role: str, num_listings: int, user_agents: List[str])
         elif response.status_code == 200:
             soup = BeautifulSoup(response.content, 'html.parser')
             
-            # Check if we're on a CAPTCHA page even with 200 status
             if any(indicator in response.text.lower() for indicator in ["captcha", "recaptcha", "challenge"]):
                 logger.info("CAPTCHA page detected despite 200 status")
                 site_key = extract_captcha_site_key(response.text) or "6Le-wvkSAAAAAPBMRTvw0Q4Muexq9bi0DJwx_mJ-"
                 captcha_token = handle_captcha_challenge(response.url, headers, site_key=site_key)
                 if captcha_token:
-                    # Handle CAPTCHA submission similar to above
+                    # Handle CAPTCHA submission
                     soup_form = soup.find('form', {'id': 'challenge-form'}) or soup.find('form')
                     if soup_form and soup_form.get('action'):
                         action_url = soup_form['action']
@@ -416,8 +379,7 @@ def scrape_indeed_jobs(job_role: str, num_listings: int, user_agents: List[str])
                         if captcha_response.status_code == 200:
                             response = session.get(url, headers=headers, timeout=15)
                             soup = BeautifulSoup(response.content, 'html.parser')
-            
-            # Try multiple selectors for job cards (Indeed frequently changes these)
+
             selectors = [
                 {'name': 'div', 'attrs': {'class': 'cardOutline'}},
                 {'name': 'div', 'attrs': {'class': 'job_seen_beacon'}},
@@ -435,16 +397,13 @@ def scrape_indeed_jobs(job_role: str, num_listings: int, user_agents: List[str])
             
             if not job_cards:
                 logger.warning("No job cards found on Indeed - page structure may have changed")
-                # Log a sample of the page content for debugging
                 logger.debug(f"Page content sample: {response.text[:500]}")
                 return job_descriptions
             
-            # Limit to requested number of listings
             job_cards = job_cards[:num_listings]
             
             for i, card in enumerate(job_cards):
                 try:
-                    # Try multiple selectors for job links
                     link_selectors = [
                         {'name': 'a', 'attrs': {'class': 'jcs-JobTitle'}},
                         {'name': 'h2', 'attrs': {'class': 'jobTitle'}},
@@ -504,8 +463,6 @@ def fetch_indeed_job_details(job_url: str, headers: dict, session: requests.Sess
     try:
         if session is None:
             session = requests.Session()
-            
-        # Add random delay
         time.sleep(random.uniform(1, 3))
         
         logger.info(f"Fetching job details from: {job_url}")
@@ -514,7 +471,6 @@ def fetch_indeed_job_details(job_url: str, headers: dict, session: requests.Sess
         
         if response.status_code == 403:
             logger.warning(f"Access denied for job details: {job_url}")
-            # Try CAPTCHA handling if needed
             if "captcha" in response.text.lower():
                 captcha_token = handle_captcha_challenge(job_url, headers)
                 if captcha_token:
@@ -527,8 +483,6 @@ def fetch_indeed_job_details(job_url: str, headers: dict, session: requests.Sess
         
         if response.status_code == 200:
             soup = BeautifulSoup(response.content, 'html.parser')
-            
-            # Try multiple selectors for job description
             description_selectors = [
                 {'name': 'div', 'attrs': {'id': 'jobDescriptionText'}},
                 {'name': 'div', 'attrs': {'class': 'jobsearch-jobDescriptionText'}},
@@ -543,10 +497,8 @@ def fetch_indeed_job_details(job_url: str, headers: dict, session: requests.Sess
                     break
             
             if job_desc_element:
-                # Extract text and clean
                 job_description = job_desc_element.get_text(separator='\n', strip=True)
-                
-                # Add metadata if available
+
                 metadata_selectors = {
                     'company': [
                         {'name': 'div', 'attrs': {'data-testid': 'inlineHeader-companyName'}},
@@ -561,15 +513,12 @@ def fetch_indeed_job_details(job_url: str, headers: dict, session: requests.Sess
                 }
                 
                 full_description = ""
-                
-                # Extract company
                 for selector in metadata_selectors['company']:
                     company_element = soup.find(**selector)
                     if company_element:
                         full_description += f"Company: {company_element.get_text(strip=True)}\n"
                         break
-                
-                # Extract location
+
                 for selector in metadata_selectors['location']:
                     location_element = soup.find(**selector)
                     if location_element:
@@ -598,13 +547,11 @@ def scrape_glassdoor_jobs(job_role: str, num_listings: int, user_agents: List[st
     job_descriptions = []
     
     try:
-        # Prepare search URL
         search_term = job_role.lower().replace(" ", "-")
         url = f"https://www.glassdoor.com/Job/jobs.htm?sc.keyword={search_term}"
         
         logger.info(f"Attempting to scrape Glassdoor at: {url}")
-        
-        # Setup headers
+
         headers = {
             "User-Agent": random.choice(user_agents),
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
@@ -619,14 +566,9 @@ def scrape_glassdoor_jobs(job_role: str, num_listings: int, user_agents: List[st
             "Sec-Fetch-Site": "cross-site",
             "Sec-Fetch-User": "?1"
         }
-        
-        # Session for maintaining cookies
+ 
         session = requests.Session()
-        
-        # Add delay
         time.sleep(random.uniform(2, 4))
-        
-        # Make request
         response = session.get(url, headers=headers, timeout=15, allow_redirects=True)
         
         logger.info(f"Glassdoor response status: {response.status_code}")
@@ -682,12 +624,10 @@ def scrape_glassdoor_jobs(job_role: str, num_listings: int, user_agents: List[st
                 logger.debug(f"Page content sample: {response.text[:500]}")
                 return job_descriptions
             
-            # Limit to requested number
             job_cards = job_cards[:num_listings]
             
             for i, card in enumerate(job_cards):
                 try:
-                    # Try multiple selectors for job links
                     link_selectors = [
                         {'name': 'a', 'attrs': {'class': 'JobCard_jobTitle__GLyJ1'}},
                         {'name': 'a', 'attrs': {'data-test': 'job-link'}},
@@ -707,14 +647,10 @@ def scrape_glassdoor_jobs(job_role: str, num_listings: int, user_agents: List[st
                             job_url = 'https://www.glassdoor.com' + job_url
                         
                         logger.info(f"Processing job {i+1}/{len(job_cards)}: {job_url}")
-                        
-                        # Get detailed job description
                         job_description = fetch_glassdoor_job_details(job_url, headers, session)
                         if job_description:
                             job_descriptions.append(job_description)
                             logger.info(f"Successfully scraped job {i+1}")
-                        
-                        # Add delay to avoid rate limiting
                         time.sleep(random.uniform(3, 6))
                     else:
                         logger.warning(f"No valid link found in job card {i+1}")
@@ -750,10 +686,7 @@ def fetch_glassdoor_job_details(job_url: str, headers: dict) -> Optional[str]:
             job_desc_element = soup.find('div', {'class': 'JobDetails_jobDescription__uW_fK'})
             
             if job_desc_element:
-                # Extract text and clean
                 job_description = job_desc_element.get_text(separator='\n', strip=True)
-                
-                # Add metadata if available
                 company_element = soup.find('div', {'class': 'EmployerProfile_employerName__9MGcV'})
                 location_element = soup.find('div', {'class': 'JobDetails_location__Ds1fM'})
                 salary_element = soup.find('div', {'class': 'JobCard_salaryEstimate__QpbTW'})
@@ -817,21 +750,19 @@ def handle_captcha_challenge(site_url: str, headers: dict, site_key: str = None)
             return None
         
         logger.info(f"Attempting to solve CAPTCHA for: {site_url}")
-        
-        # If site_key not provided, try to extract it
         if not site_key:
             response = requests.get(site_url, headers=headers, timeout=10)
             site_key = extract_captcha_site_key(response.text)
             
             if not site_key:
                 logger.error(f"Could not extract CAPTCHA site key for {site_url}")
-                # Use a default test key as fallback
+
                 if "indeed.com" in site_url:
-                    site_key = "6Le-wvkSAAAAAPBMRTvw0Q4Muexq9bi0DJwx_mJ-"  # Indeed's key
+                    site_key = "6Le-wvkSAAAAAPBMRTvw0Q4Muexq9bi0DJwx_mJ-"
                 elif "glassdoor.com" in site_url:
-                    site_key = "6LdKlZEpAAAAAOFgFOtx4g1XgPakC3RvjKjVm5Jj"  # Glassdoor's key
+                    site_key = "6LdKlZEpAAAAAOFgFOtx4g1XgPakC3RvjKjVm5Jj" 
                 else:
-                    site_key = "6LeIxAcTAAAAAJcZVRqyHh71UMIEGNQ_MXjiZKhI"  # Google's test key
+                    site_key = "6LeIxAcTAAAAAJcZVRqyHh71UMIEGNQ_MXjiZKhI"
                 logger.info(f"Using default site key: {site_key}")
         
         # Solve CAPTCHA using 2Captcha
@@ -885,9 +816,8 @@ def extract_captcha_site_key(html_content: str) -> Optional[str]:
             matches = re.findall(pattern, html_content)
             if matches:
                 return matches[0]
-        
-        # Default test key if nothing found and we know there's a CAPTCHA
-        return "6LeIxAcTAAAAAJcZVRqyHh71UMIEGNQ_MXjiZKhI"  # Google's test key
+
+        return "6LeIxAcTAAAAAJcZVRqyHh71UMIEGNQ_MXjiZKhI"
     except Exception as e:
         logger.error(f"Error extracting CAPTCHA site key: {e}")
         return None
@@ -902,10 +832,9 @@ async def suggest_roles_from_cv(cv_text: str) -> List[str]:
             "Based on the following CV/resume, suggest 5-7 relevant job roles that this person would be qualified for. "
             "Consider their education, skills, experience, and projects. "
             "ONLY return a simple comma-separated list of job roles, nothing else.\n\n"
-            f"CV/Resume text:\n{cv_text[:2000]}..."  # Limit text length to avoid token limits
+            f"CV/Resume text:\n{cv_text[:2000]}..." 
         )
-        
-        # Call OpenAI with retry logic
+
         max_retries = 3
         for attempt in range(max_retries):
             try:
@@ -913,21 +842,16 @@ async def suggest_roles_from_cv(cv_text: str) -> List[str]:
                 break
             except Exception as e:
                 logger.error(f"OpenAI API call failed (attempt {attempt+1}/{max_retries}): {e}")
-                if attempt == max_retries - 1:  # Last attempt
+                if attempt == max_retries - 1: 
                     raise
-                time.sleep(2 ** attempt)  # Exponential backoff
+                time.sleep(2 ** attempt) 
         
-        # Process the response to extract roles
         roles = []
         if response:
-            # Split by commas and clean up
             roles = [role.strip() for role in response.split(',')]
-            # Remove any empty strings or very short roles
             roles = [role for role in roles if len(role) > 3]
-            # Limit to max 7 roles
             roles = roles[:7]
-        
-        # If no roles were extracted or the API call failed, return default roles
+
         if not roles:
             logger.warning("No roles extracted from OpenAI response, using defaults")
             return ["Software Engineer", "Web Developer", "Data Analyst", "Project Manager", "IT Specialist"]
@@ -936,7 +860,6 @@ async def suggest_roles_from_cv(cv_text: str) -> List[str]:
     
     except Exception as e:
         logger.error(f"Error suggesting roles from CV: {e}")
-        # Return default roles on error to prevent complete failure
         return ["Software Engineer", "Web Developer", "Data Analyst", "Project Manager", "IT Specialist"]
 
 
@@ -947,23 +870,22 @@ async def analyze_job_description(job_role: str, job_descriptions: List[str], cv
     If CV text is provided, also perform skills gap analysis.
     """
     try:
-        # Determine if we're using real or AI-generated data
         is_ai_generated = len(job_descriptions) == 1 and len(job_descriptions[0]) > 500
         source_type = "AI-generated based on job market trends" if is_ai_generated else "Real job listings"
-        
-        # Combine job descriptions into one text
         combined_desc = "\n\n---\n\n".join(job_descriptions)
         
-        # Base prompt for job analysis - More explicit instruction for JSON format
+        # Improved prompt for job analysis that preserves detailed info but removes company names
         prompt = (
             f"You are a career expert analyzing job listings for the role of '{job_role}'.\n\n"
             f"Below are {'an AI-generated job description' if is_ai_generated else 'several job listings'} for this role. "
-            f"Please analyze {'it' if is_ai_generated else 'them'} and provide:\n"
-            f"1. A concise summary of the role (2-3 sentences)\n"
-            f"2. A list of key responsibilities commonly mentioned\n"
-            f"3. A list of required qualifications and skills\n"
-            f"4. Typical salary range and benefits if mentioned\n"
-            f"5. Common technologies and tools required\n\n"
+            f"Please analyze {'it' if is_ai_generated else 'them'} in detail and extract ALL the specific information but remove company identifiers. Include:\n"
+            f"1. A detailed summary of the role (2-3 sentences)\n"
+            f"2. A comprehensive list of all responsibilities mentioned (preserve ALL details)\n"
+            f"3. A complete list of required qualifications and skills (keep ALL specific technical requirements)\n"
+            f"4. Exact salary ranges and benefits if mentioned\n"
+            f"5. All specific technologies, tools, and platforms required\n\n"
+            f"IMPORTANT: Extract and include ALL detailed job information but REMOVE company names, brand names, proprietary tool names, and specific office locations. "
+            f"Instead of removing details, replace company-specific references with generic terms (e.g., 'the company', 'the organization', 'the employer').\n\n"
             f"Job listings:\n{combined_desc}\n\n"
             f"IMPORTANT: Return ONLY valid JSON with no additional text or formatting.\n"
             f"The response must be a JSON object with these exact keys: summary, responsibilities (array), "
@@ -973,15 +895,10 @@ async def analyze_job_description(job_role: str, job_descriptions: List[str], cv
             f'{{"summary": "...", "responsibilities": ["..."], "qualifications": ["..."], "salary": null, "benefits": null, "technologies": ["..."], "additional_info": null}}'
         )
         
-        # Call OpenAI for job analysis
         job_analysis_response = call_openai(prompt)
-        
-        # Clean the response before parsing
         cleaned_response = job_analysis_response.strip()
         
-        # Remove markdown code blocks if present
         if cleaned_response.startswith("```"):
-            # Find the start and end of the JSON content
             lines = cleaned_response.split('\n')
             json_started = False
             json_lines = []
@@ -996,70 +913,60 @@ async def analyze_job_description(job_role: str, job_descriptions: List[str], cv
                     json_lines.append(line)
             
             cleaned_response = '\n'.join(json_lines).strip()
-        
-        # Parse the JSON response
+
         try:
             job_data = json.loads(cleaned_response)
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse JSON from OpenAI response: {e}")
             logger.error(f"Response was: {cleaned_response}")
-            
-            # Extract JSON from text response using regex as fallback
-            import re
             json_pattern = r'\{[\s\S]*\}'
             json_matches = re.findall(json_pattern, cleaned_response)
             
             if json_matches:
-                # Try parsing the first JSON object found
                 try:
                     job_data = json.loads(json_matches[0])
                 except json.JSONDecodeError:
-                    # Create minimal valid structure
                     job_data = {
-                        "summary": f"Software Engineer role focusing on developing high-quality software applications.",
-                        "responsibilities": ["Unable to parse responsibilities from the response"],
-                        "qualifications": ["Unable to parse qualifications from the response"],
-                        "technologies": [],
+                        "summary": f"{job_role} role focusing on core industry responsibilities and functions.",
+                        "responsibilities": ["Performing essential duties related to the role"],
+                        "qualifications": ["Relevant education and experience for the position"],
+                        "technologies": ["Industry-standard tools and technologies"],
                         "salary": None,
                         "benefits": None,
                         "additional_info": None
                     }
             else:
-                # Create minimal valid structure
                 job_data = {
-                    "summary": f"Software Engineer role focusing on developing high-quality software applications.",
-                    "responsibilities": ["Unable to parse responsibilities from the response"],
-                    "qualifications": ["Unable to parse qualifications from the response"],
-                    "technologies": [],
+                    "summary": f"{job_role} role focusing on core industry responsibilities and functions.",
+                    "responsibilities": ["Performing essential duties related to the role"],
+                    "qualifications": ["Relevant education and experience for the position"],
+                    "technologies": ["Industry-standard tools and technologies"],
                     "salary": None,
                     "benefits": None,
                     "additional_info": None
                 }
         
-        # Add skills gap analysis if CV text is provided
+        # Add skills gap analysis
         if cv_text:
             skills_gap_prompt = (
-                f"Based on this job analysis and CV, provide a skills gap analysis.\n\n"
+                f"Based on this job analysis and CV, provide a DETAILED skills gap analysis that maintains all specific information.\n\n"
                 f"Job Role: {job_role}\n"
                 f"Job Summary: {job_data.get('summary', '')}\n"
                 f"Required Skills: {', '.join(job_data.get('qualifications', []))}\n"
                 f"Required Technologies: {', '.join(job_data.get('technologies', []))}\n\n"
                 f"CV Text (first 2000 chars): {cv_text[:2000]}\n\n"
+                f"IMPORTANT: Preserve all specific technical skills, certifications, and requirements in your analysis, but DO NOT mention company names.\n\n"
                 f"Return ONLY a JSON object with these exact keys:\n"
-                f"matching_skills (array of strings)\n"
-                f"missing_skills (array of strings)\n"
-                f"recommendations (string)\n\n"
+                f"matching_skills (array of strings with ALL matching technical skills)\n"
+                f"missing_skills (array of strings with ALL specific missing skills)\n"
+                f"recommendations (string with detailed, specific career advice, but no company names)\n\n"
                 f"Example:\n"
                 f'{{"matching_skills": ["Python", "SQL"], "missing_skills": ["AWS", "Docker"], "recommendations": "Focus on cloud technologies..."}}'
             )
             
-            # Call OpenAI for skills gap analysis
             skills_gap_response = call_openai(skills_gap_prompt)
-            
-            # Clean and parse skills gap response
             cleaned_skills_response = skills_gap_response.strip()
             
-            # Remove markdown if present
             if cleaned_skills_response.startswith("```"):
                 lines = cleaned_skills_response.split('\n')
                 json_started = False
@@ -1076,13 +983,10 @@ async def analyze_job_description(job_role: str, job_descriptions: List[str], cv
                 
                 cleaned_skills_response = '\n'.join(json_lines).strip()
             
-            # Parse the skills gap JSON
             try:
                 skills_gap_data = json.loads(cleaned_skills_response)
                 job_data["skills_gap"] = skills_gap_data
             except json.JSONDecodeError:
-                # Try regex extraction
-                import re
                 json_pattern = r'\{[\s\S]*\}'
                 json_matches = re.findall(json_pattern, cleaned_skills_response)
                 
@@ -1103,28 +1007,50 @@ async def analyze_job_description(job_role: str, job_descriptions: List[str], cv
                         "recommendations": "Please review the job requirements manually"
                     }
         
-        # Add source information
         if is_ai_generated:
             job_data["sources"] = [f"AI-generated comprehensive job description for {job_role}"]
         else:
             job_data["sources"] = ["Data aggregated from multiple job listings"]
-        
-        # Add a flag for frontend to know if it's AI-generated
+
         job_data["is_ai_generated"] = is_ai_generated
         
         return job_data
     
     except Exception as e:
         logger.error(f"Error analyzing job descriptions: {e}")
-        # Return a valid structure even on error
         return {
-            "summary": f"Software Engineer role focusing on developing and maintaining high-quality software applications.",
-            "responsibilities": ["Unable to parse responsibilities due to an error"],
-            "qualifications": ["Unable to parse qualifications due to an error"],
-            "technologies": [],
-            "salary": None,
-            "benefits": None,
-            "additional_info": None,
+            "summary": f"{job_role} professional responsible for executing specialized tasks and functions within the organization. Works collaboratively with team members to achieve objectives while utilizing industry-standard methodologies and best practices.",
+            "responsibilities": [
+                f"Execute core {job_role} functions and tasks",
+                "Apply technical expertise to solve complex problems",
+                "Collaborate with cross-functional teams",
+                "Develop and maintain relevant documentation",
+                "Monitor and report on key metrics and performance indicators",
+                "Stay current with industry trends and technological advancements"
+            ],
+            "qualifications": [
+                "Bachelor's degree in a relevant field",
+                "Proven experience in similar roles",
+                "Technical proficiency in industry-standard tools",
+                "Strong analytical and problem-solving skills",
+                "Excellent communication and teamwork abilities",
+                "Attention to detail and organizational capabilities"
+            ],
+            "technologies": [
+                "Industry-specific software applications",
+                "Data analysis and reporting tools",
+                "Collaboration platforms",
+                "Project management methodologies"
+            ],
+            "salary": "Competitive salary based on experience and qualifications",
+            "benefits": [
+                "Health and wellness benefits",
+                "Retirement plans",
+                "Professional development opportunities",
+                "Flexible work arrangements",
+                "Paid time off and holidays"
+            ],
+            "additional_info": f"This {job_role} position offers career growth opportunities in a dynamic environment.",
             "sources": ["Error occurred while processing"],
             "is_ai_generated": True
         }
@@ -1138,10 +1064,8 @@ async def generate_pdf(job_role: str, job_data: Dict) -> bytes:
         return b"PDF generation libraries not available"
     
     try:
-        # Create a temporary file for the PDF
         pdf_buffer = bytearray()
         
-        # Create the PDF document
         doc = SimpleDocTemplate(
             pdf_buffer, 
             pagesize=letter,
@@ -1151,7 +1075,6 @@ async def generate_pdf(job_role: str, job_data: Dict) -> bytes:
             bottomMargin=72
         )
         
-        # Get styles
         styles = getSampleStyleSheet()
         styles.add(ParagraphStyle(
             name='Title',
@@ -1181,7 +1104,6 @@ async def generate_pdf(job_role: str, job_data: Dict) -> bytes:
             spaceAfter=3
         ))
         
-        # Build content
         elements = []
         
         # Title
@@ -1307,9 +1229,8 @@ async def generate_pdf(job_role: str, job_data: Dict) -> bytes:
         logger.error(f"Error generating PDF: {e}")
         return f"Error generating PDF: {str(e)}".encode('utf-8')
 
-# ------------------------------------------------------------------
+
 # API Routes
-# ------------------------------------------------------------------
 
 @router.get("/history")
 async def get_search_history(request: Request):
@@ -1318,7 +1239,6 @@ async def get_search_history(request: Request):
     """
     logger.info("Fetching job search history")
     
-    # Get token from request
     token = await get_token_from_request(request)
     if not token:
         logger.warning("No authentication token found")
@@ -1327,7 +1247,7 @@ async def get_search_history(request: Request):
             content={"detail": "Authentication required"}
         )
     
-    # Verify token
+
     user_id = await verify_token(token)
     if not user_id:
         return JSONResponse(
@@ -1335,7 +1255,6 @@ async def get_search_history(request: Request):
             content={"detail": "Invalid authentication token"}
         )
     
-    # Check if MongoDB is available
     if job_searches_col is None:
         logger.error("MongoDB not connected")
         return JSONResponse(
@@ -1379,7 +1298,6 @@ async def suggest_roles(
     """
     logger.info(f"Suggesting roles based on CV ID: {data.cv_id}")
     
-    # Get token from request
     token = await get_token_from_request(request)
     if not token:
         logger.warning("No authentication token found")
@@ -1388,7 +1306,6 @@ async def suggest_roles(
             content={"detail": "Authentication required"}
         )
     
-    # Verify token
     user_id = await verify_token(token)
     if not user_id:
         return JSONResponse(
@@ -1396,7 +1313,6 @@ async def suggest_roles(
             content={"detail": "Invalid authentication token"}
         )
     
-    # Get CV text
     cv_text = await get_cv_text(data.cv_id, user_id)
     if not cv_text:
         return JSONResponse(
@@ -1404,7 +1320,6 @@ async def suggest_roles(
             content={"detail": "Could not retrieve or extract CV content"}
         )
     
-    # Suggest roles based on CV text
     suggested_roles = await suggest_roles_from_cv(cv_text)
     if not suggested_roles:
         return JSONResponse(
@@ -1412,7 +1327,6 @@ async def suggest_roles(
             content={"detail": "Failed to suggest roles based on CV"}
         )
     
-    # Return suggested roles
     return {"suggested_roles": suggested_roles}
 
 @router.post("/research")
@@ -1425,7 +1339,6 @@ async def research_job(
     """
     logger.info(f"Researching job role: {data.job_role}")
     
-    # Get token from request
     token = await get_token_from_request(request)
     if not token:
         logger.warning("No authentication token found")
@@ -1434,18 +1347,15 @@ async def research_job(
             content={"detail": "Authentication required"}
         )
     
-    # Verify token
     user_id = await verify_token(token)
     if not user_id:
         return JSONResponse(
             status_code=401,
             content={"detail": "Invalid authentication token"}
         )
-    
-    # Start with CV text as None
+        
     cv_text = None
     
-    # Get CV text if cv_id is provided
     if data.cv_id:
         cv_text = await get_cv_text(data.cv_id, user_id)
         if cv_text:
@@ -1453,12 +1363,10 @@ async def research_job(
     
     # Scrape job listings
     job_descriptions = scrape_job_listings(data.job_role)
-    
-    # If scraping failed or no descriptions found, use a fallback approach
+
     if not job_descriptions:
         logger.warning(f"Web scraping failed for job role: {data.job_role}")
-        
-        # Generate a simulated job description using AI
+
         fallback_prompt = (
             f"Create a comprehensive job description for the role of {data.job_role}. "
             f"Include typical responsibilities, required qualifications, and technologies used. "
@@ -1500,7 +1408,6 @@ async def create_pdf(
     """
     logger.info(f"Generating PDF for job role: {data.job_role}")
     
-    # Get token from request
     token = await get_token_from_request(request)
     if not token:
         logger.warning("No authentication token found")
@@ -1508,8 +1415,7 @@ async def create_pdf(
             status_code=401,
             content={"detail": "Authentication required"}
         )
-    
-    # Verify token
+
     user_id = await verify_token(token)
     if not user_id:
         return JSONResponse(
@@ -1517,10 +1423,9 @@ async def create_pdf(
             content={"detail": "Invalid authentication token"}
         )
     
-    # Generate PDF
+
     pdf_bytes = await generate_pdf(data.job_role, data.job_data.dict())
-    
-    # Return PDF as attachment
+
     filename = f"{data.job_role.replace(' ', '_')}_Job_Description.pdf"
     
     return Response(
@@ -1542,7 +1447,6 @@ async def suggest_roles_upload(
     """
     logger.info(f"Suggesting roles based on uploaded CV: {cv_file.filename}")
     
-    # Get token from request
     token = await get_token_from_request(request)
     if not token:
         logger.warning("No authentication token found")
@@ -1551,15 +1455,13 @@ async def suggest_roles_upload(
             content={"detail": "Authentication required"}
         )
     
-    # Verify token
     user_id = await verify_token(token)
     if not user_id:
         return JSONResponse(
             status_code=401,
             content={"detail": "Invalid authentication token"}
         )
-    
-    # Extract optional fields from form data
+
     form = await request.form()
     captcha_token = form.get("captcha_token")
     browser_info = form.get("browser_info")
@@ -1575,12 +1477,8 @@ async def suggest_roles_upload(
     # Check for CAPTCHA verification if needed
     if captcha_token:
         logger.info("CAPTCHA token provided, verifying...")
-        # In a real implementation, you would verify the token with reCAPTCHA service
-        # For now, we'll just log it and continue
-    
-    # Check if we need to generate a CAPTCHA challenge
-    # This could be based on IP rate limiting, suspicious behavior, etc.
-    should_require_captcha = False  # Change based on your criteria
+
+    should_require_captcha = False
     
     if should_require_captcha and not captcha_token:
         logger.warning("CAPTCHA verification required but no token provided")
@@ -1589,21 +1487,18 @@ async def suggest_roles_upload(
             content={
                 "detail": "CAPTCHA verification required",
                 "captcha_required": True,
-                "captcha_site_key": "your-recaptcha-site-key"  # Replace with your actual site key
+                "captcha_site_key": "recaptcha-site-key"
             }
         )
     
     try:
-        # Ensure uploads directory exists
         uploads_dir = ensure_uploads_dir()
         
-        # Generate a unique filename
         file_id = generate_timestamp_id()
         clean_filename_str = clean_filename(cv_file.filename or "uploaded_cv.pdf")
         filename = f"{file_id}_{clean_filename_str}"
         file_path = os.path.join(uploads_dir, filename)
         
-        # Save file to disk with proper error handling
         try:
             content = await cv_file.read()
             if not content or len(content) < 100:
@@ -1615,7 +1510,6 @@ async def suggest_roles_upload(
             with open(file_path, "wb") as f:
                 f.write(content)
                 
-            # Reset file pointer
             await cv_file.seek(0)
             
             logger.info(f"CV file saved to: {file_path}")
@@ -1625,8 +1519,7 @@ async def suggest_roles_upload(
                 status_code=500,
                 content={"detail": "Failed to save uploaded file"}
             )
-        
-        # Extract text from CV with timeout protection
+
         try:
             cv_text = extract_text_from_document(file_path, vision_client, openai_client)
             if not cv_text or len(cv_text.strip()) < 100:
@@ -1640,8 +1533,7 @@ async def suggest_roles_upload(
                 status_code=500,
                 content={"detail": "Failed to process CV content. Please try a different file format."}
             )
-        
-        # Save to database for future use
+ 
         try:
             cv_collection = db.get_collection("cvs")
             if cv_collection is not None:
@@ -1663,10 +1555,10 @@ async def suggest_roles_upload(
             logger.info(f"Saved CV to database with ID: {cv_id}")
         except Exception as db_err:
             logger.error(f"Database error: {db_err}")
-            # Continue even if DB save fails - we can still suggest roles
+           
             cv_id = f"temp_{file_id}"
         
-        # Suggest roles based on CV text
+       
         suggested_roles = await suggest_roles_from_cv(cv_text)
         if not suggested_roles:
             return JSONResponse(
@@ -1674,7 +1566,7 @@ async def suggest_roles_upload(
                 content={"detail": "Failed to suggest roles based on CV"}
             )
         
-        # Return suggested roles along with CV ID
+       
         return {
             "suggested_roles": suggested_roles,
             "cv_id": cv_id
@@ -1697,8 +1589,7 @@ async def solve_captcha(
     Solve a reCAPTCHA with improved logging.
     """
     logger.info(f"Solving CAPTCHA with data: {data}")
-    
-    # Get token from request
+
     token = await get_token_from_request(request)
     if not token:
         logger.warning("No authentication token found")
@@ -1707,7 +1598,7 @@ async def solve_captcha(
             content={"detail": "Authentication required"}
         )
     
-    # Verify token
+
     user_id = await verify_token(token)
     if not user_id:
         return JSONResponse(
@@ -1715,7 +1606,7 @@ async def solve_captcha(
             content={"detail": "Invalid authentication token"}
         )
     
-    # Check required parameters
+
     site_key = data.get("site_key")
     page_url = data.get("page_url")
     
@@ -1729,7 +1620,6 @@ async def solve_captcha(
         )
     
     try:
-        # Import 2Captcha with detailed error handling
         try:
             from twocaptcha import TwoCaptcha, NetworkException, ApiException, TimeoutException, ValidationException
             logger.info("Successfully imported 2Captcha library")
@@ -1740,7 +1630,6 @@ async def solve_captcha(
                 content={"detail": "CAPTCHA solving service not configured - library missing"}
             )
         
-        # Your 2Captcha API key - should be stored in environment variable
         api_key = os.getenv("TWOCAPTCHA_API_KEY")
         if not api_key:
             logger.error("2Captcha API key not set in environment")
@@ -1751,13 +1640,11 @@ async def solve_captcha(
         
         logger.info(f"Using 2Captcha API key: {api_key[:4]}...{api_key[-4:] if len(api_key) > 8 else ''}")
         
-        # Initialize solver
+
         solver = TwoCaptcha(api_key)
         
-        # Detect if it's invisible reCAPTCHA
+
         is_invisible = data.get("is_invisible", False)
-        
-        # Solve the CAPTCHA
         logger.info(f"Sending CAPTCHA to 2Captcha: site_key={site_key}, url={page_url}, invisible={is_invisible}")
         
         try:
@@ -1799,7 +1686,7 @@ async def solve_captcha(
                 content={"detail": f"CAPTCHA solving failed: {str(e)}"}
             )
         
-        # Extract token
+  
         if isinstance(result, dict) and 'code' in result:
             captcha_token = result['code']
         else:
@@ -1814,7 +1701,7 @@ async def solve_captcha(
         
         logger.info(f"CAPTCHA solved successfully. Token: {captcha_token[:15]}...")
         
-        # Return the token
+   
         return {"captcha_token": captcha_token}
     
     except Exception as e:

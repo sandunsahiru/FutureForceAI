@@ -1,7 +1,6 @@
 version: '3.8'
 
 services:
-  # 1) Next.js container
   nextjs:
     build: 
       context: ./frontend
@@ -9,9 +8,7 @@ services:
     container_name: nextjs
     environment:
       JWT_SECRET: "NE60hAlMyF6wVlOt5+VDKpaU/I6FJ4Oa5df1gpG/MTg="
-      # This tells your Next.js app where to find the API
-      # Since you're using Nginx, requests can be relative to the domain
-      NEXT_PUBLIC_API_URL: ""  # Empty means use relative URLs
+      NEXT_PUBLIC_API_URL: "" 
     expose:
       - "3000"
     volumes:
@@ -21,14 +18,12 @@ services:
     depends_on:
       - fastapi
 
-  # 2) FastAPI container
   fastapi:
     build:
       context: ./ai-backend
       dockerfile: Dockerfile
     container_name: fastapi
     environment:
-      # Add environment variables for your API here
       MONGODB_URI: "mongodb://host.docker.internal:27017/futureforceai"
       JWT_SECRET: "NE60hAlMyF6wVlOt5+VDKpaU/I6FJ4Oa5df1gpG/MTg="
     expose:
@@ -38,7 +33,6 @@ services:
     networks:
       - app-network
 
-  # 3) Nginx reverse proxy
   nginx:
     image: nginx:latest
     container_name: proxy
@@ -58,4 +52,3 @@ networks:
 
 volumes:
   shared-uploads:
-    # Named volume for shared uploads between containers

@@ -16,13 +16,17 @@ try:
     from routers.interviewprep import router as interviewprep_router
     logger.info("Successfully imported interviewprep router")
     
-    # Import the new CV router
+    # Import the CV router
     from routers.cv_model import router as cv_router
     logger.info("Successfully imported CV router")
     
-    # Import the new saved CV router
+    # Import the saved CV router
     from routers.saved_cv_route import router as saved_cv_router
     logger.info("Successfully imported saved CV router")
+    
+    # Import the resume analyzer router (NEW)
+    from routers.resume_analyzer import router as resume_analyzer_router
+    logger.info("Successfully imported resume analyzer router")
     
     # Import the job description router
     from routers.job_description import router as job_description_router
@@ -32,7 +36,7 @@ try:
     from routers.job_search import router as job_search_router, setup_job_search_routes
     logger.info("Successfully imported job search router")
     
-    # Import the career guidance router (NEW)
+    # Import the career guidance router
     from routers.career_guidance import router as career_guidance_router
     logger.info("Successfully imported career guidance router")
     
@@ -63,10 +67,10 @@ async def log_requests(request: Request, call_next):
         logger.error(f"Request error: {e}")
         raise
 
-# CORS for your Next.js front end
+# CORS for Next.js front end
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, restrict to your domain
+    allow_origins=["*"],  
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -80,7 +84,6 @@ def initialize():
     2. Check if all required routes are properly registered
     """
     try:
-        # Create __init__.py in routers directory if it doesn't exist
         routers_dir = os.path.join(os.path.dirname(__file__), "routers")
         
         if not os.path.exists(routers_dir):
@@ -102,14 +105,17 @@ initialize()
 logger.info("Registering interviewprep router with prefix: /api/interview")
 app.include_router(interviewprep_router, prefix="/api/interview", tags=["InterviewPrep"])
 
-# Changed: Update the CV router prefix to match the frontend's expected path
+# Register CV router
 logger.info("Registering CV router with prefix: /api/user")
 app.include_router(cv_router, prefix="/api/user", tags=["CV"])
 
 # Register the saved CV router
-# Note: We don't add a prefix here since the saved_cv_router already includes the full path
 logger.info("Registering saved CV router")
 app.include_router(saved_cv_router, tags=["SavedCV"])
+
+# Register resume analyzer router (NEW)
+logger.info("Registering resume analyzer router with prefix: /api/resume")
+app.include_router(resume_analyzer_router, prefix="/api/resume", tags=["ResumeAnalyzer"])
 
 # Register the job description router
 logger.info("Registering job description router with prefix: /api/job-description")
@@ -119,7 +125,7 @@ app.include_router(job_description_router, prefix="/api/job-description", tags=[
 logger.info("Registering job search router with prefix: /api")
 app.include_router(job_search_router, prefix="/api", tags=["JobSearch"])
 
-# Register the career guidance router (NEW)
+# Register the career guidance router
 logger.info("Registering career guidance router with prefix: /api/career-guidance")
 app.include_router(career_guidance_router, prefix="/api/career-guidance", tags=["CareerGuidance"])
 
@@ -145,7 +151,6 @@ async def root():
         ]
     }
 
-# If you want to run directly with: python main.py
 if __name__ == "__main__":
     import uvicorn
     logger.info("Starting FastAPI server")

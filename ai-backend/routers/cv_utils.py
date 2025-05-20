@@ -5,7 +5,6 @@ from typing import Dict, List, Optional, Union, Any
 from datetime import datetime
 from bson import ObjectId
 
-# Set up logging
 logger = logging.getLogger("futureforceai")
 
 def ensure_uploads_dir() -> str:
@@ -38,21 +37,16 @@ def get_potential_file_paths(cv_document: Dict[str, Any]) -> List[str]:
     """
     potential_paths = []
     
-    # Primary file path from the database
     if "filePath" in cv_document and cv_document["filePath"]:
         potential_paths.append(cv_document["filePath"])
     
-    # Get timestamp-based fileId if available
     if "fileId" in cv_document and cv_document["fileId"]:
         file_id = cv_document["fileId"]
         original_name = cv_document.get('originalName', '')
         clean_original = clean_filename(original_name)
-        
-        # Add paths with timestamp ID
         potential_paths.append(f"/app/uploads/{file_id}_{clean_original}")
         potential_paths.append(f"./uploads/{file_id}_{clean_original}")
     
-    # Try based on MongoDB ObjectId
     if "_id" in cv_document:
         doc_id = str(cv_document["_id"])
         original_name = cv_document.get('originalName', '')
@@ -60,20 +54,17 @@ def get_potential_file_paths(cv_document: Dict[str, Any]) -> List[str]:
         
         potential_paths.append(f"/app/uploads/{doc_id}_{clean_original}")
         potential_paths.append(f"./uploads/{doc_id}_{clean_original}")
-    
-    # Add path based on filename
+
     if 'filename' in cv_document:
         filename = cv_document.get('filename')
         potential_paths.append(f"./uploads/{filename}")
         potential_paths.append(f"/app/uploads/{filename}")
     
-    # Add path based on original name
     if 'originalName' in cv_document:
         original_name = cv_document.get('originalName')
         potential_paths.append(f"./uploads/{original_name}")
         potential_paths.append(f"/app/uploads/{original_name}")
         
-        # Also try cleaned version of original name
         clean_original = clean_filename(original_name)
         if clean_original != original_name:
             potential_paths.append(f"./uploads/{clean_original}")
@@ -94,14 +85,11 @@ async def save_cv_to_db(
     """
     Save CV information to MongoDB.
     """
-    # Generate timestamp ID if not provided
     if not file_id:
         file_id = generate_timestamp_id()
     
-    # Create filename with timestamp ID
     filename = f"{file_id}_{clean_filename(original_name)}"
-    
-    # Create CV document
+
     cv_document = {
         "_id": ObjectId(),
         "userId": user_id,
@@ -116,7 +104,6 @@ async def save_cv_to_db(
         "fileId": file_id
     }
     
-    # Save to MongoDB
     try:
         result = await collection.insert_one(cv_document)
         logger.info(f"Saved CV to MongoDB with ID: {cv_document['_id']}")
@@ -131,28 +118,22 @@ async def find_cv_by_id(db, cv_id, user_id):
         return None
     
     try:
-        # Get the CV collection
+
         cv_collection = db.get_collection("cvs")
-        
-        # IMPORTANT: Don't check 'if cv_collection:' - use 'is not None' instead
         if cv_collection is None:
             logger.error("CV collection not available")
             return None
-        
-        # Convert string ID to ObjectId if needed
+
         doc_id = cv_id
         if isinstance(cv_id, str):
             try:
                 doc_id = ObjectId(cv_id)
             except:
-                # If not a valid ObjectId, try to find by other fields
                 query = {"fileId": cv_id, "userId": user_id}
                 return await cv_collection.find_one(query)
         
-        # Try to find by ObjectId first
         cv_document = await cv_collection.find_one({"_id": doc_id, "userId": user_id})
-        
-        # If not found by ObjectId, try finding by fileId
+
         if cv_document is None:
             cv_document = await cv_collection.find_one({"fileId": cv_id, "userId": user_id})
         

@@ -1,12 +1,36 @@
 // app/page.js
+'use client';
 import { Brain, Users, Briefcase, Search, Bot, FileSearch, MapPin, BookOpen, GitBranch, Sparkles } from 'lucide-react';
 import Header from './Header';
 import Footer from './Footer';
 import Link from 'next/link';
 import Image from 'next/image';
-
+import { useState, useEffect } from 'react';
 
 export default function Home() {
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+
+  useEffect(() => {
+    // Check if user is logged in
+    const checkAuthStatus = async () => {
+      try {
+        const response = await fetch('/api/auth/check', {
+          method: 'GET',
+          credentials: 'include',
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          setIsLoggedIn(data.authenticated);
+        }
+      } catch (error) {
+        console.error('Error checking auth status:', error);
+      }
+    };
+    
+    checkAuthStatus();
+  }, []);
+
   return (
     <div className="bg-slate-50">
       <Header />
@@ -26,15 +50,24 @@ export default function Home() {
               resume optimization, job search, career guidance, and interactive learning tools—all in one place.
             </p>
             <div className="flex gap-4">
-              <Link 
-                href="/register"
-                className="bg-gradient-to-r from-purple-600 to-blue-500 text-white px-8 py-3 rounded-full hover:shadow-lg transition-all"
-              >
-                Sign Up
-              </Link>
-              <button className="border border-purple-600 text-purple-600 px-8 py-3 rounded-full hover:bg-purple-50 transition-all">
+              {isLoggedIn ? (
+                <Link 
+                  href="/dashboard"
+                  className="bg-gradient-to-r from-purple-600 to-blue-500 text-white px-8 py-3 rounded-full hover:shadow-lg transition-all"
+                >
+                  Go to Dashboard
+                </Link>
+              ) : (
+                <Link 
+                  href="/register"
+                  className="bg-gradient-to-r from-purple-600 to-blue-500 text-white px-8 py-3 rounded-full hover:shadow-lg transition-all"
+                >
+                  Sign Up
+                </Link>
+              )}
+              <Link href="#features" className="border border-purple-600 text-purple-600 px-8 py-3 rounded-full hover:bg-purple-50 transition-all">
                 Learn More
-              </button>
+              </Link>
             </div>
           </div>
           <div className="relative">
@@ -184,13 +217,18 @@ export default function Home() {
             <p className="text-white/90 mb-8">
               Sign up today and unlock personalized career support and AI-powered insights.
             </p>
-            <button className="bg-white text-purple-600 px-8 py-3 rounded-full hover:shadow-lg transition-all">
-              Join Now
-            </button>
+            {isLoggedIn ? (
+              <Link href="/dashboard" className="bg-white text-purple-600 px-8 py-3 rounded-full hover:shadow-lg transition-all">
+                Go to Dashboard
+              </Link>
+            ) : (
+              <Link href="/register" className="bg-white text-purple-600 px-8 py-3 rounded-full hover:shadow-lg transition-all">
+                Join Now
+              </Link>
+            )}
           </div>
         </div>
       </section>
-
 
       <Footer />
     </div>

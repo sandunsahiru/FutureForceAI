@@ -780,23 +780,6 @@ const handleSearchJob = async (role) => {
             <h3 className="text-xl font-bold text-gray-800">
               {jobData.job_role}
             </h3>
-            <button
-              onClick={generatePDF}
-              disabled={pdfGenerating}
-              className="px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 transition disabled:bg-purple-400 flex items-center text-sm"
-            >
-              {pdfGenerating ? (
-                <>
-                  <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent mr-1.5"></div>
-                  Generating PDF...
-                </>
-              ) : (
-                <>
-                  <Download className="mr-1.5 h-4 w-4" />
-                  Download PDF
-                </>
-              )}
-            </button>
           </div>
           
           <div className="bg-purple-50 p-4 rounded-lg mb-6">

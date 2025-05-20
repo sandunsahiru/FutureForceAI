@@ -886,15 +886,6 @@ export default function JobSearch() {
                       )}
                       
                       <div className="flex justify-end gap-2 pt-4">
-                        <a
-                          href={job.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="px-4 py-2 border border-purple-600 text-purple-600 rounded-md hover:bg-purple-50 transition flex items-center"
-                        >
-                          <ExternalLink className="mr-1 h-4 w-4" />
-                          View on {job.source || 'Job Site'}
-                        </a>
                         <button
                           onClick={() => applyForJob(job)}
                           className="px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 transition flex items-center"
